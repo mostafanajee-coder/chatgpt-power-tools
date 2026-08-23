@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TurboGPT – Speed & Tools</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+
+  <div class="app-container" id="mainView">
+
+    <!-- Top Glow Header -->
+    <header class="app-header">
+      <div class="header-brand">
+        <div class="logo-wrapper">
+          <img src="../../icons/icon128.png" class="brand-logo" alt="TurboGPT" />
+          <div class="pulse-indicator"></div>
+        </div>
+        <div class="brand-info">
+          <div class="brand-title-row">
+            <h1 class="brand-title">TurboGPT</h1>
+            <span class="pro-badge">ULTRA</span>
+          </div>
+          <p class="brand-subtitle">Smart Speed &amp; Power Tools</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span class="version-tag" id="headerVersion">v3.6.0</span>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="app-content">
+
+      <!-- Speed Booster Core Card -->
+      <section class="card turbo-card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <div class="icon-avatar speed-avatar">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+              </svg>
+            </div>
+            <div>
+              <h2 class="card-title">Chat Acceleration</h2>
+              <p class="card-subtitle">Zero-lag for long conversations</p>
+            </div>
+          </div>
+          <label class="custom-switch">
+            <input type="checkbox" id="toggleEnabled" checked />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+
+        <!-- Visible Messages Control -->
+        <div class="limit-controller" id="trimmerDetails">
+          <div class="limit-labels">
+            <span class="limit-primary-label">Visible Messages</span>
+            <span class="limit-secondary-label">Initial limit (Recommended: 2 - 15)</span>
+          </div>
+          <div class="stepper-widget">
+            <button class="step-btn" id="msgLimitDec" title="Decrease limit">−</button>
+            <input type="number" id="messageLimit" class="step-input" min="1" max="100" value="15" />
+            <button class="step-btn" id="msgLimitInc" title="Increase limit">+</button>
+          </div>
+        </div>
+
+        <!-- In-Chat Load More Batch Size Control -->
+        <div class="limit-controller" id="batchDetails" style="margin-top: 8px;">
+          <div class="limit-labels">
+            <span class="limit-primary-label">Floating Button Batch</span>
+            <span class="limit-secondary-label">Messages to load per click</span>
+          </div>
+          <div class="stepper-widget">
+            <button class="step-btn" id="batchLimitDec" title="Decrease batch size">−</button>
+            <input type="number" id="loadBatchSize" class="step-input" min="1" max="50" value="5" />
+            <button class="step-btn" id="batchLimitInc" title="Increase batch size">+</button>
+          </div>
+        </div>
+
+        <!-- Continuation Prompt Size -->
+        <div class="limit-controller" id="continuationDetails" style="margin-top: 8px;">
+          <div class="limit-labels">
+            <span class="limit-primary-label">Continuation Turns</span>
+            <span class="limit-secondary-label">Recent turns in the continuation prompt</span>
+          </div>
+          <div class="stepper-widget">
+            <button class="step-btn" id="continuationDec" title="Fewer turns">−</button>
+            <input type="number" id="continuationTurns" class="step-input" min="1" max="100" value="10" />
+            <button class="step-btn" id="continuationInc" title="More turns">+</button>
+          </div>
+        </div>
+
+        <!-- Live Performance Gauges -->
+        <div class="metrics-grid">
+          <div class="metric-box">
+            <div class="ring-container">
+              <svg class="circular-chart" viewBox="0 0 36 36">
+                <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                <path class="circle-fill" id="memoryRingFill" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+              </svg>
+              <div class="ring-center-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"></path>
+                </svg>
+              </div>
+            </div>
+            <div class="metric-data">
+              <span class="metric-value" id="statMemorySaved">0%</span>
+              <span class="metric-label">History Reduced</span>
+            </div>
+          </div>
+
+          <div class="metric-box">
+            <div class="metric-icon-badge">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+              </svg>
+            </div>
+            <div class="metric-data">
+              <div class="metric-value">
+                <span id="statShown">0</span><span class="metric-sub-val"> / <span id="statHidden">0</span></span>
+              </div>
+              <span class="metric-label">Visible Messages</span>
+              <span class="metric-label" id="statCountNote" style="display:block;font-size:9px;opacity:.7;margin-top:2px;"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Advanced In-Chat Tools Card -->
+      <section class="card tools-card">
+        <div class="card-header mini-header">
+          <div class="card-title-group">
+            <div class="icon-avatar tools-avatar">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
+              </svg>
+            </div>
+            <div>
+              <h2 class="card-title">Power Tools</h2>
+              <p class="card-subtitle">In-chat helpers &amp; navigation</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="tools-toggle-list">
+          <!-- Floating Load More Pill Toggle -->
+          <div class="tool-toggle-row">
+            <div class="tool-info">
+              <span class="tool-name">Floating "Load More" Button</span>
+              <span class="tool-desc">Quick button to reveal older turns</span>
+            </div>
+            <label class="custom-switch micro-switch">
+              <input type="checkbox" id="toggleFloatingButton" checked />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <!-- Table of Contents Outline Toggle -->
+          <div class="tool-toggle-row">
+            <div class="tool-info">
+              <span class="tool-name">Chat Outline / Index</span>
+              <span class="tool-desc">Quick question navigation sidebar</span>
+            </div>
+            <label class="custom-switch micro-switch">
+              <input type="checkbox" id="toggleOutline" checked />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <!-- Quick Search & Bookmarks Toggle -->
+          <div class="tool-toggle-row">
+            <div class="tool-info">
+              <span class="tool-name">Quick Search &amp; Bookmarks (⭐️)</span>
+              <span class="tool-desc">In-chat search (Alt+F) &amp; save replies</span>
+            </div>
+            <label class="custom-switch micro-switch">
+              <input type="checkbox" id="toggleSearch" checked />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+
+          <!-- Sidebar Folders Toggle -->
+          <div class="tool-toggle-row">
+            <div class="tool-info">
+              <span class="tool-name">Sidebar Folders</span>
+              <span class="tool-desc">Organize chats into categories</span>
+            </div>
+            <label class="custom-switch micro-switch">
+              <input type="checkbox" id="toggleFolders" checked />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Smart Chat Exporter Card -->
+      <section class="card export-card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <div class="icon-avatar export-avatar">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+            </div>
+            <div>
+              <h2 class="card-title">Full &amp; Selective Exporter</h2>
+              <p class="card-subtitle">Word (.docx), PDF, Markdown, TXT, JSON</p>
+            </div>
+          </div>
+        </div>
+        <div class="export-actions-row">
+          <button class="btn btn-primary" id="exportCurrentBtn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+              <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            Export / Select Messages
+          </button>
+        </div>
+      </section>
+
+      <!-- Backup & Restore Data Card -->
+      <section class="card backup-card">
+        <div class="card-header mini-header">
+          <div class="card-title-group">
+            <div class="icon-avatar backup-avatar">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                <polyline points="7 3 7 8 15 8"></polyline>
+              </svg>
+            </div>
+            <div>
+              <h2 class="card-title">Backup &amp; Sync Data</h2>
+              <p class="card-subtitle">Export/Import folders &amp; pinned chats</p>
+            </div>
+          </div>
+        </div>
+        <div class="backup-actions-row">
+          <button class="btn btn-secondary" id="exportBackupBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Export Backup (JSON)
+          </button>
+          <button class="btn btn-secondary" id="importBackupBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+            Import Backup
+          </button>
+          <input type="file" id="importBackupFileInput" accept=".json,application/json" style="display:none;" />
+        </div>
+      </section>
+
+      <!-- Dynamic Save Floating Banner -->
+      <div class="save-bar-container hidden" id="saveBar">
+        <button id="refreshBtn" class="btn btn-save">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          Save &amp; Apply Changes
+        </button>
+      </div>
+
+    </main>
+
+    <!-- Footer Privacy Assurance -->
+    <footer class="app-footer">
+      <div class="privacy-pill">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        <span>100% Private &amp; Local. Zero Telemetry.</span>
+      </div>
+    </footer>
+
+  </div>
+
+  <script src="popupConstants.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
