@@ -1325,9 +1325,16 @@
 
     const effectiveLimit = Math.max(1, (appSettings.messageLimit || 15) + manuallyUnhiddenTurnsCount);
 
-    const userCutoff = userTurns.length > effectiveLimit ? userTurns[userTurns.length - effectiveLimit] : 0;
-    const countCutoff = turns.length > effectiveLimit ? turns.length - effectiveLimit : 0;
-    const cutoffIdx = Math.max(userCutoff, countCutoff);
+    // Each conversation exchange starts with a user prompt.
+    // Preserving the last N user prompts guarantees the user's question is never hidden
+    // from the visible conversation round.
+    let cutoffIdx = 0;
+    if (userTurns.length > 0) {
+      cutoffIdx = userTurns.length > effectiveLimit ? userTurns[userTurns.length - effectiveLimit] : 0;
+    } else {
+      const exchangeLimit = effectiveLimit * 2;
+      cutoffIdx = turns.length > exchangeLimit ? turns.length - exchangeLimit : 0;
+    }
 
     if (cutoffIdx > 0) {
       turns.forEach((turn, idx) => {

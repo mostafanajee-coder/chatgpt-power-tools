@@ -53,9 +53,13 @@ function testTurnLimitEnforcement(turns, messageLimit) {
   });
 
   const effectiveLimit = Math.max(1, messageLimit);
-  const userCutoff = userTurns.length > effectiveLimit ? userTurns[userTurns.length - effectiveLimit] : 0;
-  const countCutoff = turns.length > effectiveLimit ? turns.length - effectiveLimit : 0;
-  const cutoffIdx = Math.max(userCutoff, countCutoff);
+  let cutoffIdx = 0;
+  if (userTurns.length > 0) {
+    cutoffIdx = userTurns.length > effectiveLimit ? userTurns[userTurns.length - effectiveLimit] : 0;
+  } else {
+    const exchangeLimit = effectiveLimit * 2;
+    cutoffIdx = turns.length > exchangeLimit ? turns.length - exchangeLimit : 0;
+  }
 
   if (cutoffIdx > 0) {
     turns.forEach((turn, idx) => {
@@ -98,6 +102,48 @@ const fiveHidden = fiveTurns.filter((t) => t.classList.contains("turbogpt-dom-hi
 const fiveVisible = fiveTurns.filter((t) => !t.classList.contains("turbogpt-dom-hidden")).length;
 check("DOM Limit 2 on 5 messages: exactly 3 hidden", fiveHidden === 3, `hidden=${fiveHidden}`);
 check("DOM Limit 2 on 5 messages: exactly 2 visible", fiveVisible === 2, `visible=${fiveVisible}`);
+
+// Realistic Alternating Chat: User & Assistant pairs (10 elements = 5 exchanges)
+function createAlternatingChatDom(exchangeCount) {
+  const turns = [];
+  for (let i = 1; i <= exchangeCount; i++) {
+    // User turn
+    const uClassList = new Set();
+    const userRoleEl = { tagName: "DIV", getAttribute: (k) => (k === "data-message-author-role" ? "user" : null) };
+    turns.push({
+      tagName: "DIV",
+      id: `turn-user-${i}`,
+      classList: { add: (c) => uClassList.add(c), remove: (c) => uClassList.delete(c), contains: (c) => uClassList.has(c) },
+      getAttribute: (k) => (k === "data-testid" ? `conversation-turn-user-${i}` : null),
+      querySelector: (sel) => (sel.includes('author-role="user"') ? userRoleEl : null),
+      textContent: `User Question ${i}`
+    });
+    // Assistant turn
+    const aClassList = new Set();
+    const astRoleEl = { tagName: "DIV", getAttribute: (k) => (k === "data-message-author-role" ? "assistant" : null) };
+    turns.push({
+      tagName: "DIV",
+      id: `turn-assistant-${i}`,
+      classList: { add: (c) => aClassList.add(c), remove: (c) => aClassList.delete(c), contains: (c) => aClassList.has(c) },
+      getAttribute: (k) => (k === "data-testid" ? `conversation-turn-assistant-${i}` : null),
+      querySelector: (sel) => (sel.includes('author-role="assistant"') ? astRoleEl : null),
+      textContent: `ChatGPT Response ${i}`
+    });
+  }
+  return turns;
+}
+
+const alternatingChat = createAlternatingChatDom(5); // 5 Q&A pairs (10 DOM turns)
+// Setting limit = 1 must preserve the last user question AND the assistant response (both visible)
+testTurnLimitEnforcement(alternatingChat, 1);
+const altHidden = alternatingChat.filter((t) => t.classList.contains("turbogpt-dom-hidden")).length;
+const altVisible = alternatingChat.filter((t) => !t.classList.contains("turbogpt-dom-hidden")).length;
+check("DOM Limit 1 on alternating chat: keeps 1 complete exchange (user question + bot reply)",
+  altVisible === 2 && altHidden === 8, `visible=${altVisible} hidden=${altHidden}`);
+check("DOM Limit 1 on alternating chat: last user turn is visible",
+  !alternatingChat[8].classList.contains("turbogpt-dom-hidden"), `turn-user-5 visible`);
+check("DOM Limit 1 on alternating chat: last assistant turn is visible",
+  !alternatingChat[9].classList.contains("turbogpt-dom-hidden"), `turn-assistant-5 visible`);
 
 // Verify getStats adjusted visibleTurns calculation:
 function computeReportedVisible({ baseVisible, hiddenCount, enabled }) {
