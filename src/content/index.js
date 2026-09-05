@@ -21,6 +21,7 @@
     enableOutline: true,
     enableSearch: true,
     enableFolders: true,
+    liveAutoTrim: false,
     disableNotifications: false
   };
 
@@ -335,6 +336,7 @@
         localStorage.removeItem(EXTRA_KEY);
       } catch {}
       manuallyUnhiddenTurnsCount = 0;
+      initialEnforcementDone = false;
       resetRenderCaches();
       renderAllTools();
       return true;
@@ -1282,10 +1284,19 @@
   }
 
   // Active DOM Turn Enforcer:
-  // Live enforcement of visible message limit so setting (e.g. 2) immediately hides older turns.
+  // Enforces visible message limit (e.g. 2). When liveAutoTrim is false,
+  // limits are enforced on page load/refresh or chat navigation only, so ongoing
+  // chat sessions do not abruptly hide new messages under the user's eyes.
   let manuallyUnhiddenTurnsCount = 0;
+  let initialEnforcementDone = false;
 
-  function enforceDomTurnLimit() {
+  function enforceDomTurnLimit(options = {}) {
+    const isLiveUpdate = options.live === true;
+    if (isLiveUpdate && !appSettings.liveAutoTrim && initialEnforcementDone) {
+      updateOutlineBadge();
+      return;
+    }
+
     if (!appSettings.enabled) {
       document.querySelectorAll(".turbogpt-dom-hidden").forEach((el) => {
         el.classList.remove("turbogpt-dom-hidden");
@@ -1373,6 +1384,7 @@
         });
       }
     }
+    initialEnforcementDone = true;
     updateOutlineBadge();
   }
 
@@ -1475,7 +1487,7 @@
         const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
 
         manuallyUnhiddenTurnsCount += batchSize;
-        enforceDomTurnLimit();
+        enforceDomTurnLimit({ force: true });
         renderFloatingLoadButton(true);
 
         if (anchor && chatContainer) {
@@ -1496,7 +1508,7 @@
 
     pill.querySelector("#turbogpt-load-all-action").addEventListener("click", () => {
       manuallyUnhiddenTurnsCount = 99999;
-      enforceDomTurnLimit();
+      enforceDomTurnLimit({ force: true });
       renderFloatingLoadButton(true);
       if (lastStatus.serverHasOlder === true) {
         stashScrollPosition();
@@ -3136,7 +3148,7 @@
 
   function renderAllTools() {
     injectStyles();
-    enforceDomTurnLimit();
+    enforceDomTurnLimit({ force: true });
     renderFloatingLoadButton(true);
     renderFloatingDock();
     injectTopbarExportButton();
@@ -3154,6 +3166,7 @@
     if (href === lastHref) return;
     lastHref = href;
     manuallyUnhiddenTurnsCount = 0;
+    initialEnforcementDone = false;
     cachedFullConvMessages = null;
     cachedFullConvId = null;
     // A new temporary chat gets a fresh session identity.
@@ -3186,7 +3199,7 @@
       moTimer = null;
       checkNavigation();
       if (appSettings.enabled) {
-        enforceDomTurnLimit();
+        enforceDomTurnLimit({ live: true });
         renderFloatingLoadButton();
         injectBookmarkButtons();
         renderSidebarFolders();

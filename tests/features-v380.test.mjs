@@ -258,6 +258,27 @@ check("Floating Pill: targets turn item container for insertion",
   indexJsContent.includes("const targetTurn = firstVisibleTurn ? getTurnItemContainer(firstVisibleTurn) : null;") &&
   indexJsContent.includes("targetTurn.parentNode.insertBefore(pill, targetTurn);"));
 
+/* ---------------- 6. Configurable Live Auto-Trim Setting ---------------- */
+console.log("\n--- PART 6: Configurable Live Auto-Trim Setting ---");
+
+const popupHtmlContent = fs.readFileSync("src/popup/popup.html", "utf8");
+const popupJsContent = fs.readFileSync("src/popup/popup.js", "utf8");
+
+check("Live Auto-Trim: popup HTML contains toggleLiveAutoTrim checkbox",
+  popupHtmlContent.includes('id="toggleLiveAutoTrim"'));
+
+check("Live Auto-Trim: popup JS defaults liveAutoTrim to false",
+  popupJsContent.includes("liveAutoTrim: false"));
+
+check("Live Auto-Trim: index.js defaults liveAutoTrim to false",
+  indexJsContent.includes("liveAutoTrim: false"));
+
+check("Live Auto-Trim: enforces on page load and skips live chat when false",
+  indexJsContent.includes("if (isLiveUpdate && !appSettings.liveAutoTrim && initialEnforcementDone)"));
+
+check("Live Auto-Trim: passes { live: true } in MutationObserver",
+  indexJsContent.includes("enforceDomTurnLimit({ live: true });"));
+
 const totalPassed = results.filter((r) => r.pass).length;
 console.log(`\n================ ${totalPassed}/${results.length} passed ================`);
 if (totalPassed !== results.length) {

@@ -7,6 +7,7 @@
     }
 
     const toggleEnabled = document.getElementById("toggleEnabled");
+    const toggleLiveAutoTrim = document.getElementById("toggleLiveAutoTrim");
     const toggleFloatingButton = document.getElementById("toggleFloatingButton");
     const toggleOutline = document.getElementById("toggleOutline");
     const toggleSearch = document.getElementById("toggleSearch");
@@ -42,6 +43,7 @@
       enableOutline: true,
       enableSearch: true,
       enableFolders: true,
+      liveAutoTrim: false,
       disableNotifications: false
     };
 
@@ -144,6 +146,7 @@
     function getCurrentSettings() {
       return {
         enabled: toggleEnabled ? toggleEnabled.checked : true,
+        liveAutoTrim: toggleLiveAutoTrim ? toggleLiveAutoTrim.checked : false,
         messageLimit: parseInt(messageLimitInput?.value, 10) || 15,
         loadBatchSize: parseInt(loadBatchSizeInput?.value, 10) || 5,
         continuationTurns: parseInt(continuationInput?.value, 10) || 10,
@@ -187,6 +190,7 @@
     chrome.storage.local.get({ [SETTINGS_KEY]: DEFAULT_SETTINGS }, (res) => {
       const s = { ...DEFAULT_SETTINGS, ...(res[SETTINGS_KEY] || {}) };
       if (toggleEnabled) toggleEnabled.checked = s.enabled;
+      if (toggleLiveAutoTrim) toggleLiveAutoTrim.checked = s.liveAutoTrim === true;
       if (messageLimitInput) messageLimitInput.value = s.messageLimit;
       if (loadBatchSizeInput) loadBatchSizeInput.value = s.loadBatchSize || 5;
       if (continuationInput) continuationInput.value = s.continuationTurns || 10;
@@ -199,7 +203,7 @@
       initialSettings = getCurrentSettings();
     });
 
-    [toggleEnabled, toggleFloatingButton, toggleOutline, toggleSearch, toggleFolders].forEach(el => {
+    [toggleEnabled, toggleLiveAutoTrim, toggleFloatingButton, toggleOutline, toggleSearch, toggleFolders].forEach(el => {
       if (el) el.addEventListener("change", () => saveSettings());
     });
 

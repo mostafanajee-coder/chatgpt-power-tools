@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.8.0-blue.svg?style=flat-square" alt="Version 3.8.0" />
+  <img src="https://img.shields.io/badge/Version-3.8.1-blue.svg?style=flat-square" alt="Version 3.8.1" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Privacy-100%25%20Local-emerald.svg?style=flat-square" alt="100% Local" />
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg?style=flat-square" alt="Zero dependencies" />
@@ -22,7 +22,7 @@
 
 ### 🚀 1. Long Chat Speed Booster (Zero Lag)
 - **Instant Acceleration**: Trims heavy historical messages from the browser DOM while preserving full context on ChatGPT's servers.
-- **Active DOM Turn Limiter**: Dynamically and immediately limits visible messages on screen (e.g. keep only 2 turns) without requiring page reload.
+- **Configurable Live Auto-Trim**: By default, turns are trimmed comfortably on page load/refresh so ongoing chats are never abruptly hidden. A dedicated toggle lets users enable live instant auto-trimming as new messages arrive if preferred.
 - **Smart Turn Trimming**: Automatically renders only the most recent Q&A turns for maximum typing and scrolling smoothness.
 - **Strict Scroll-Lock**: Prevents unwanted infinite-scroll loading freezes when navigating up.
 
