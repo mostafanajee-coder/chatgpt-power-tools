@@ -113,9 +113,18 @@
         hiddenText = "?";
         note = "Full count unavailable";
       } else if (countState === "partial") {
-        hiddenText = total !== null && total > 0 ? `${total}+` : "?";
-        const why = failureLabel(s.countFailureReason);
-        note = why ? `Partial — ${why}` : "Partial count — not final";
+        if ((s.countFailureReason === "no-progress" || s.countFailureReason === "empty-page") && total !== null && total > 0) {
+          isComplete = true;
+          hiddenText = String(total);
+          savedPct = total > 0
+            ? Math.max(0, Math.min(100, Math.round(((total - visible) / total) * 100)))
+            : 0;
+          note = "";
+        } else {
+          hiddenText = total !== null && total > 0 ? `${total}+` : "?";
+          const why = failureLabel(s.countFailureReason);
+          note = why ? `Partial — ${why}` : "Partial count — not final";
+        }
       } else if (countState === "stale") {
         hiddenText = total !== null && total > 0 ? `${total}+` : "?";
         note = "New turn sent — recount pending";

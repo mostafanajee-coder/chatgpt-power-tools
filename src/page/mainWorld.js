@@ -463,7 +463,14 @@
         }
         if (!isGenerationActive(conversationId, generation)) { failureReason = "cancelled"; break; }
         if (!pageData || !Array.isArray(pageData.messages)) { failureReason = "schema"; break; }
-        if (pageData.messages.length === 0) { failureReason = "empty-page"; break; }
+        if (pageData.messages.length === 0) {
+          if (!pageData.page_info || pageData.page_info.has_previous_page !== true) {
+            reachedEnd = true;
+            break;
+          }
+          failureReason = "empty-page";
+          break;
+        }
 
         // Progress proof over ALL records: a page that adds no record we have
         // not already seen means the cursor went the wrong way (newer), or
@@ -473,7 +480,14 @@
         for (const rid of pageRecordIds) {
           if (!seenRecordIds.has(rid)) { seenRecordIds.add(rid); newRecords++; }
         }
-        if (newRecords === 0) { failureReason = "no-progress"; break; }
+        if (newRecords === 0) {
+          if (!pageData.page_info || pageData.page_info.has_previous_page !== true) {
+            reachedEnd = true;
+            break;
+          }
+          failureReason = "no-progress";
+          break;
+        }
 
         const pageUserIds = getUserIdsInOrder(pageData.messages);
         const pageMissing = countMissing(pageUserIds);
@@ -760,13 +774,27 @@
           failureReason = "parse"; break;
         }
         if (!pageData || !Array.isArray(pageData.messages)) { failureReason = "schema"; break; }
-        if (pageData.messages.length === 0) { failureReason = "empty-page"; break; }
+        if (pageData.messages.length === 0) {
+          if (!pageData.page_info || pageData.page_info.has_previous_page !== true) {
+            reachedStart = true;
+            break;
+          }
+          failureReason = "empty-page";
+          break;
+        }
 
         // Keep only records we do not already hold, preserving server order.
         const fresh = pageData.messages.filter(
           (m) => m?.id == null || !seenRecordIds.has(String(m.id))
         );
-        if (fresh.length === 0) { failureReason = "no-progress"; break; }
+        if (fresh.length === 0) {
+          if (!pageData.page_info || pageData.page_info.has_previous_page !== true) {
+            reachedStart = true;
+            break;
+          }
+          failureReason = "no-progress";
+          break;
+        }
         for (const m of fresh) if (m?.id != null) seenRecordIds.add(String(m.id));
 
         // concat, not unshift(...spread): a long chat would blow the stack.

@@ -142,6 +142,12 @@ r = popup.render({ available: true, visibleTurns: 2, totalTurns: 5, countState: 
 check("5b-ii. rate limit reason humanised", /rate limited/.test(r.note), r.note);
 r = popup.render({ available: true, visibleTurns: 2, totalTurns: 5, countState: "partial", countFailureReason: "http-403" });
 check("5b-iii. unmapped http reason still shown", /403/.test(r.note), r.note);
+r = popup.render({ available: true, visibleTurns: 1, totalTurns: 5, countState: "partial", countFailureReason: "no-progress" });
+check("5b-iv. no-progress shows exact count without + and calculates savedPct",
+  r.shown === "1" && r.hidden === "5" && r.mem === "80%" && r.note === "", `${r.shown}/${r.hidden} ${r.mem} ${r.note}`);
+r = popup.render({ available: true, visibleTurns: 1, totalTurns: 5, countState: "partial", countFailureReason: "empty-page" });
+check("5b-v. empty-page shows exact count without + and calculates savedPct",
+  r.shown === "1" && r.hidden === "5" && r.mem === "80%" && r.note === "", `${r.shown}/${r.hidden} ${r.mem} ${r.note}`);
 r = popup.render({ available: true, visibleTurns: 2, totalTurns: null, countState: "error" });
 check("5c. error -> 2 / ? unavailable", r.hidden === "?" && /unavailable/i.test(r.note), `${r.hidden} ${r.note}`);
 r = popup.render({ available: false, countState: "switching" });
