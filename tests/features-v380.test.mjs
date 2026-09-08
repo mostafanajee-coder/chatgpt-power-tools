@@ -360,6 +360,20 @@ check("Auto-Load on Scroll: unhideOlderBatch uses scroll anchoring (diff check)"
   indexJsContent.includes("const diff = newTop - anchorTop;") &&
   indexJsContent.includes("chatContainer.scrollBy({ top: diff, behavior: \"instant\" });"));
 
+check("Auto-Load on Scroll: zero-reload safeguard prevents automatic reload on scroll",
+  indexJsContent.includes("if (options.fromScroll) {") &&
+  indexJsContent.includes("removeAutoScrollLoader();") &&
+  indexJsContent.includes("return false;"));
+
+check("Auto-Load on Scroll: gesture listeners guard against scroll loops when domHidden is 0",
+  indexJsContent.includes("st <= 150 && domHidden > 0") &&
+  indexJsContent.includes("currentST <= 150 && !isAutoLoadingBatch"));
+
+const mainWorldContent = fs.readFileSync("src/page/mainWorld.js", "utf8");
+check("Auto-Load on Scroll: mainWorld buffers up to 50 turns when enableAutoScrollLoad is true",
+  mainWorldContent.includes("const autoScrollActive = config.enableAutoScrollLoad === true && extra === 0;") &&
+  mainWorldContent.includes("Math.max(50, config.messageLimit)"));
+
 const totalPassed = results.filter((r) => r.pass).length;
 console.log(`\n================ ${totalPassed}/${results.length} passed ================`);
 if (totalPassed !== results.length) {

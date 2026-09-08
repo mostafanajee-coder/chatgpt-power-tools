@@ -14,7 +14,8 @@
 
   const DEFAULT_CONFIG = {
     enabled: true,
-    messageLimit: 15
+    messageLimit: 15,
+    enableAutoScrollLoad: false
   };
 
   // Circuit breaker only - NOT a claim about any real ChatGPT conversation limit.
@@ -43,7 +44,8 @@
         const parsed = JSON.parse(raw);
         return {
           enabled: parsed.enabled ?? DEFAULT_CONFIG.enabled,
-          messageLimit: Math.max(1, parsed.messageLimit ?? DEFAULT_CONFIG.messageLimit)
+          messageLimit: Math.max(1, parsed.messageLimit ?? DEFAULT_CONFIG.messageLimit),
+          enableAutoScrollLoad: parsed.enableAutoScrollLoad === true
         };
       }
     } catch {}
@@ -973,7 +975,16 @@
       const pageRecordIds = getRecordIds(data.messages);
 
       const extra = getExtraTurns();
-      const turnLimit = Math.max(1, config.messageLimit + extra);
+      const autoScrollActive = config.enableAutoScrollLoad === true && extra === 0;
+
+      // When auto-scroll loading is active on initial open, preserve older turns up to a safe buffer
+      // (e.g. up to 50 user turns) so that React mounts them into the DOM.
+      // enforceDomTurnLimit in content script immediately hides any turns beyond
+      // messageLimit using .turbogpt-dom-hidden (display: none !important), keeping DOM layout cost zero.
+      // When the user scrolls up, these turns are unhidden instantly in 0ms without any page reload!
+      const payloadTurnLimit = autoScrollActive
+        ? Math.max(50, config.messageLimit)
+        : Math.max(1, config.messageLimit + extra);
 
       // "Load older messages" fix: the requested turns may live on pages the
       // first response never contained. When (and ONLY when) the user has
@@ -984,21 +995,23 @@
       let hydration = { pagesFetched: 0, reachedStart: false, failureReason: null };
       const serverHasOlderInitially = originalPageInfo?.has_previous_page === true;
 
-      if (extra > 0 && serverHasOlderInitially && countUserTurns(workingMessages) < turnLimit) {
+      if (extra > 0 && serverHasOlderInitially && countUserTurns(workingMessages) < payloadTurnLimit) {
         hydration = await hydrateOlderMessages({
           baseUrl: requestUrl,
           requestInit,
           pageInfo: originalPageInfo,
           messages: workingMessages,
-          turnLimit
+          turnLimit: payloadTurnLimit
         });
         workingMessages = hydration.messages;
       }
 
       const totalMessages = workingMessages.length;
-      const keptMessages = trimConversationMessages(workingMessages, turnLimit);
+      const keptMessages = trimConversationMessages(workingMessages, payloadTurnLimit);
       const renderedCount = keptMessages.length;
-      const visibleTurns = countUserTurns(keptMessages);
+      const visibleTurns = autoScrollActive
+        ? Math.min(config.messageLimit + extra, countUserTurns(keptMessages))
+        : countUserTurns(keptMessages);
       // Older messages still exist on the server that are not on screen.
       const serverHasOlder = hydration.pagesFetched > 0
         ? !hydration.reachedStart
@@ -1018,7 +1031,7 @@
         hasOlderMessages: hasOlder,
         serverHasOlder,
         extraTurns: extra,
-        turnLimit: turnLimit,
+        turnLimit: config.messageLimit + extra,
         hydratedPages: hydration.pagesFetched,
         hydrationFailureReason: hydration.failureReason,
         reachedConversationStart: hydration.pagesFetched > 0 ? hydration.reachedStart : !serverHasOlderInitially,

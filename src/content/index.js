@@ -144,7 +144,8 @@
         try {
           localStorage.setItem(CONFIG_KEY, JSON.stringify({
             enabled: appSettings.enabled,
-            messageLimit: appSettings.messageLimit
+            messageLimit: appSettings.messageLimit,
+            enableAutoScrollLoad: appSettings.enableAutoScrollLoad
           }));
         } catch {}
         renderAllTools();
@@ -164,7 +165,8 @@
           try {
             localStorage.setItem(CONFIG_KEY, JSON.stringify({
               enabled: appSettings.enabled,
-              messageLimit: appSettings.messageLimit
+              messageLimit: appSettings.messageLimit,
+              enableAutoScrollLoad: appSettings.enableAutoScrollLoad
             }));
             localStorage.removeItem(EXTRA_KEY);
           } catch {}
@@ -333,7 +335,8 @@
       try {
         localStorage.setItem(CONFIG_KEY, JSON.stringify({
           enabled: appSettings.enabled,
-          messageLimit: appSettings.messageLimit
+          messageLimit: appSettings.messageLimit,
+          enableAutoScrollLoad: appSettings.enableAutoScrollLoad
         }));
         localStorage.removeItem(EXTRA_KEY);
       } catch {}
@@ -1488,8 +1491,12 @@
   function renderFloatingLoadButton(force = false) {
     const existingPill = document.getElementById("turbogpt-floating-pill");
 
-    // When Auto-Load on Scroll is active, the floating button is hidden in favor of seamless scrolling
-    if (!appSettings.enabled || appSettings.enableFloatingButton === false || appSettings.enableAutoScrollLoad !== false) {
+    const domHiddenTurns = document.querySelectorAll(".turbogpt-dom-hidden").length;
+
+    // When Auto-Load on Scroll is active:
+    // As long as turns are hidden in DOM, keep pill hidden so scroll-up handles it seamlessly.
+    // If all DOM turns are unhidden and server has older turns, reveal pill for manual server-fetch.
+    if (!appSettings.enabled || appSettings.enableFloatingButton === false || (appSettings.enableAutoScrollLoad !== false && domHiddenTurns > 0)) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
       if (appSettings.enabled && appSettings.enableAutoScrollLoad !== false) {
@@ -1497,8 +1504,6 @@
       }
       return;
     }
-
-    const domHiddenTurns = document.querySelectorAll(".turbogpt-dom-hidden").length;
 
     // The conversation start has been reached: nothing older exists on server and no DOM turns hidden.
     if (lastStatus.reachedConversationStart === true && !lastStatus.serverHasOlder && domHiddenTurns === 0) {
@@ -1683,7 +1688,13 @@
       return true;
     }
 
-    // When no turns are locally hidden in DOM, but older turns exist in conversation history
+    // When scrolling up, NEVER reload the browser automatically!
+    if (options.fromScroll) {
+      removeAutoScrollLoader();
+      return false;
+    }
+
+    // Manual load button fallback: when no turns are hidden in DOM and user explicitly clicks Load
     if (hasOlderTurnsToLoad()) {
       isAutoLoadingBatch = true;
       showScrollLoader();
@@ -1762,7 +1773,8 @@
         if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
         if (e.deltaY < 0) {
           const st = getEffectiveScrollTop();
-          if (st <= 150) {
+          const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
+          if (st <= 150 && domHidden > 0) {
             unhideOlderBatch({ fromScroll: true });
           }
         }
@@ -1781,7 +1793,8 @@
         const currentY = e.touches[0]?.clientY || 0;
         if (currentY - touchStartY > 35) {
           const st = getEffectiveScrollTop();
-          if (st <= 150) {
+          const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
+          if (st <= 150 && domHidden > 0) {
             unhideOlderBatch({ fromScroll: true });
           }
         }
@@ -1796,7 +1809,8 @@
         if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
         if (e.key === "PageUp" || (e.key === "ArrowUp" && (e.ctrlKey || e.metaKey))) {
           const st = getEffectiveScrollTop();
-          if (st <= 150) {
+          const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
+          if (st <= 150 && domHidden > 0) {
             unhideOlderBatch({ fromScroll: true });
           }
         }
@@ -1816,7 +1830,10 @@
         const isUp = currentST < lastScrollTopPos;
         lastScrollTopPos = currentST;
         if (isUp && currentST <= 150 && !isAutoLoadingBatch) {
-          unhideOlderBatch({ fromScroll: true });
+          const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
+          if (domHidden > 0) {
+            unhideOlderBatch({ fromScroll: true });
+          }
         }
       };
       chatContainer.addEventListener("scroll", scrollListenerCallback, { passive: true });
