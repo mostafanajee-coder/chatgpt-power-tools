@@ -133,6 +133,8 @@
         const parsed = JSON.parse(syncRaw);
         if (parsed.messageLimit) appSettings.messageLimit = parsed.messageLimit;
         if (parsed.enabled !== undefined) appSettings.enabled = parsed.enabled;
+        if (parsed.liveAutoTrim !== undefined) appSettings.liveAutoTrim = parsed.liveAutoTrim;
+        if (parsed.enableAutoScrollLoad !== undefined) appSettings.enableAutoScrollLoad = parsed.enableAutoScrollLoad;
       }
     } catch {}
 
@@ -145,7 +147,8 @@
           localStorage.setItem(CONFIG_KEY, JSON.stringify({
             enabled: appSettings.enabled,
             messageLimit: appSettings.messageLimit,
-            enableAutoScrollLoad: appSettings.enableAutoScrollLoad
+            enableAutoScrollLoad: appSettings.enableAutoScrollLoad,
+            liveAutoTrim: appSettings.liveAutoTrim === true
           }));
         } catch {}
         renderAllTools();
@@ -166,13 +169,15 @@
             localStorage.setItem(CONFIG_KEY, JSON.stringify({
               enabled: appSettings.enabled,
               messageLimit: appSettings.messageLimit,
-              enableAutoScrollLoad: appSettings.enableAutoScrollLoad
+              enableAutoScrollLoad: appSettings.enableAutoScrollLoad,
+              liveAutoTrim: appSettings.liveAutoTrim === true
             }));
             localStorage.removeItem(EXTRA_KEY);
           } catch {}
           manuallyUnhiddenTurnsCount = 0;
           resetRenderCaches();
           renderAllTools();
+          enforceDomTurnLimit({ force: true });
         }
       }
     });
@@ -336,7 +341,8 @@
         localStorage.setItem(CONFIG_KEY, JSON.stringify({
           enabled: appSettings.enabled,
           messageLimit: appSettings.messageLimit,
-          enableAutoScrollLoad: appSettings.enableAutoScrollLoad
+          enableAutoScrollLoad: appSettings.enableAutoScrollLoad,
+          liveAutoTrim: appSettings.liveAutoTrim === true
         }));
         localStorage.removeItem(EXTRA_KEY);
       } catch {}
@@ -344,6 +350,7 @@
       initialEnforcementDone = false;
       resetRenderCaches();
       renderAllTools();
+      enforceDomTurnLimit({ force: true });
       return true;
     }
     if (request.type === "exportChat") {
@@ -1378,6 +1385,10 @@
       return;
     }
 
+    if (appSettings.liveAutoTrim) {
+      manuallyUnhiddenTurnsCount = 0;
+    }
+
     const turns = getAllConversationTurns();
     if (turns.length === 0) return;
 
@@ -1388,7 +1399,9 @@
       }
     });
 
-    const effectiveLimit = Math.max(1, (appSettings.messageLimit || 15) + manuallyUnhiddenTurnsCount);
+    const effectiveLimit = appSettings.liveAutoTrim
+      ? Math.max(1, appSettings.messageLimit || 15)
+      : Math.max(1, (appSettings.messageLimit || 15) + manuallyUnhiddenTurnsCount);
 
     // Each conversation exchange starts with a user prompt.
     // Preserving the last N user prompts guarantees the user's question is never hidden
@@ -1742,7 +1755,7 @@
   }
 
   function setupAutoScrollLoader() {
-    if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false) {
+    if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || appSettings.liveAutoTrim === true) {
       removeAutoScrollLoader();
       return;
     }
@@ -1776,13 +1789,15 @@
           scrollIntersectionObserver = new IntersectionObserver((entries) => {
             for (const entry of entries) {
               const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
-              if (entry.isIntersecting && !isAutoLoadingBatch && domHidden > 0) {
+              const currentST = chatContainer ? chatContainer.scrollTop : getEffectiveScrollTop();
+              const distanceFromBottom = chatContainer ? (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) : 0;
+              if (entry.isIntersecting && !isAutoLoadingBatch && domHidden > 0 && currentST <= 150 && distanceFromBottom > 100) {
                 unhideOlderBatch({ fromScroll: true });
               }
             }
           }, {
             root: null,
-            rootMargin: "250px 0px 0px 0px",
+            rootMargin: "50px 0px 0px 0px",
             threshold: 0
           });
           scrollIntersectionObserver.observe(sentinel);
@@ -3570,8 +3585,17 @@
   }
 
   // DOM Observer (replaces fixed-interval polling)
+  let wasStreaming = false;
   let moTimer = null;
   const observer = new MutationObserver(() => {
+    const isStreaming = !!document.querySelector('.result-streaming, [data-testid="stop-button"], button[aria-label*="Stop"]');
+    if (wasStreaming && !isStreaming) {
+      if (appSettings.enabled && appSettings.liveAutoTrim) {
+        enforceDomTurnLimit({ live: true });
+      }
+    }
+    wasStreaming = isStreaming;
+
     if (moTimer) return;
     moTimer = setTimeout(() => {
       moTimer = null;
@@ -3589,6 +3613,21 @@
       renderFloatingDock();
     }, 350);
   });
+
+  // Prompt submission listeners: trigger turn enforcement immediately when user sends a message
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && appSettings.enabled && appSettings.liveAutoTrim) {
+      setTimeout(() => enforceDomTurnLimit({ live: true }), 120);
+    }
+  }, { capture: true, passive: true });
+
+  document.addEventListener("click", (e) => {
+    if (!appSettings.enabled || !appSettings.liveAutoTrim) return;
+    const btn = e.target && e.target.closest ? e.target.closest('button[data-testid="send-button"], button[aria-label*="Send"], button[data-testid="fruitjuice-send-button"]') : null;
+    if (btn) {
+      setTimeout(() => enforceDomTurnLimit({ live: true }), 120);
+    }
+  }, { capture: true, passive: true });
 
   function startObserver() {
     if (document.body) {

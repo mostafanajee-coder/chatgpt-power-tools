@@ -371,8 +371,27 @@ check("Auto-Load on Scroll: gesture listeners guard against scroll loops when do
 
 const mainWorldContent = fs.readFileSync("src/page/mainWorld.js", "utf8");
 check("Auto-Load on Scroll: mainWorld buffers up to 50 turns when enableAutoScrollLoad is true",
-  mainWorldContent.includes("const autoScrollActive = config.enableAutoScrollLoad === true && extra === 0;") &&
+  mainWorldContent.includes("const autoScrollActive = config.enableAutoScrollLoad === true && !config.liveAutoTrim && extra === 0;") &&
   mainWorldContent.includes("Math.max(50, config.messageLimit)"));
+
+check("Live Auto-Trim: background.js defaults liveAutoTrim to false",
+  bgJsContent.includes("liveAutoTrim: false"));
+
+check("Live Auto-Trim: mainWorld.js supports liveAutoTrim in config",
+  mainWorldContent.includes("liveAutoTrim: false") &&
+  mainWorldContent.includes("liveAutoTrim: parsed.liveAutoTrim === true"));
+
+check("Live Auto-Trim: index.js syncs liveAutoTrim to localStorage and storage change",
+  indexJsContent.includes("liveAutoTrim: appSettings.liveAutoTrim === true") &&
+  indexJsContent.includes("if (appSettings.liveAutoTrim) {\n      manuallyUnhiddenTurnsCount = 0;"));
+
+check("Live Auto-Trim: setupAutoScrollLoader is disabled when liveAutoTrim is active",
+  indexJsContent.includes("appSettings.liveAutoTrim === true") &&
+  indexJsContent.includes("removeAutoScrollLoader();"));
+
+check("Live Auto-Trim: immediate triggers on send and streaming completion",
+  indexJsContent.includes("wasStreaming && !isStreaming") &&
+  indexJsContent.includes("e.key === \"Enter\" && !e.shiftKey && appSettings.enabled && appSettings.liveAutoTrim"));
 
 console.log("\n--- PART 8: Modern Mapping Tree & Virtualizer Spacer Preservation ---");
 check("Mapping Tree: mainWorld extracts conversation history from node tree",

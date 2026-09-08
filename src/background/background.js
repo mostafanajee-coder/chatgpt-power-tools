@@ -7,6 +7,7 @@ const SETTINGS_KEY = "turbogpt_settings";
 
 const DEFAULT_SETTINGS = {
   enabled: true,
+  liveAutoTrim: false,
   messageLimit: 15,
   loadBatchSize: 5,
   continuationTurns: 10,

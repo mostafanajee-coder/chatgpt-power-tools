@@ -15,7 +15,8 @@
   const DEFAULT_CONFIG = {
     enabled: true,
     messageLimit: 15,
-    enableAutoScrollLoad: false
+    enableAutoScrollLoad: false,
+    liveAutoTrim: false
   };
 
   // Circuit breaker only - NOT a claim about any real ChatGPT conversation limit.
@@ -45,7 +46,8 @@
         return {
           enabled: parsed.enabled ?? DEFAULT_CONFIG.enabled,
           messageLimit: Math.max(1, parsed.messageLimit ?? DEFAULT_CONFIG.messageLimit),
-          enableAutoScrollLoad: parsed.enableAutoScrollLoad === true
+          enableAutoScrollLoad: parsed.enableAutoScrollLoad === true,
+          liveAutoTrim: parsed.liveAutoTrim === true
         };
       }
     } catch {}
@@ -1004,7 +1006,7 @@
       const myGeneration = countGeneration;
 
       const extra = getExtraTurns();
-      const autoScrollActive = config.enableAutoScrollLoad === true && extra === 0;
+      const autoScrollActive = config.enableAutoScrollLoad === true && !config.liveAutoTrim && extra === 0;
 
       // When auto-scroll loading is active on initial open, preserve older turns up to a safe buffer
       // (e.g. up to 50 user turns) so that React mounts them into the DOM.
