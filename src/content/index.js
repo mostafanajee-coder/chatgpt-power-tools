@@ -207,6 +207,7 @@
     } catch {}
     renderFloatingLoadButton();
     updateOutlineBadge();
+    setupAutoScrollLoader();
     return true;
   }
 
@@ -1292,8 +1293,27 @@
 
   // Resilient element queries (Self-Healing Selectors)
   function getChatScrollContainer() {
-    return document.querySelector('main [class*="react-scroll-to-bottom"]') ||
-           document.querySelector('main div[class*="overflow-y-auto"]') ||
+    const primary = document.querySelector('main [class*="react-scroll-to-bottom"]') ||
+                    document.querySelector('main div[class*="overflow-y-auto"]');
+    if (primary && (primary.scrollHeight > primary.clientHeight || primary.scrollTop > 0)) {
+      return primary;
+    }
+
+    const firstTurn = document.querySelector('[data-testid^="conversation-turn-"], article');
+    if (firstTurn) {
+      let curr = firstTurn.parentElement;
+      while (curr && curr !== document.body && curr !== document.documentElement) {
+        try {
+          const style = window.getComputedStyle(curr);
+          if ((style.overflowY === "auto" || style.overflowY === "scroll") && curr.scrollHeight > curr.clientHeight) {
+            return curr;
+          }
+        } catch {}
+        curr = curr.parentElement;
+      }
+    }
+
+    return primary ||
            document.querySelector('main [role="presentation"]') ||
            document.querySelector('main');
   }
@@ -1440,6 +1460,31 @@
   // 1. Floating Load Button
   let lastPillSignature = null;
 
+  function hasOlderTurnsToLoad() {
+    const domHiddenTurns = document.querySelectorAll(".turbogpt-dom-hidden").length;
+    if (domHiddenTurns > 0) return true;
+
+    if (lastStatus.serverHasOlder === true || lastStatus.hasOlderMessages === true) return true;
+
+    const legacyHiddenRecords = Math.max(
+      0,
+      (lastStatus.totalMessages || 0) - (lastStatus.renderedMessages || 0)
+    );
+    if (legacyHiddenRecords > 0) return true;
+
+    const backendDiff = Math.max(
+      0,
+      (lastStatus.totalBackendRecords || 0) - (lastStatus.loadedBackendRecords || lastStatus.visibleBackendRecords || 0)
+    );
+    if (backendDiff > 0) return true;
+
+    if (Number.isFinite(lastStatus.totalTurns) && Number.isFinite(lastStatus.visibleTurns)) {
+      if (lastStatus.totalTurns > lastStatus.visibleTurns) return true;
+    }
+
+    return false;
+  }
+
   function renderFloatingLoadButton(force = false) {
     const existingPill = document.getElementById("turbogpt-floating-pill");
 
@@ -1447,6 +1492,9 @@
     if (!appSettings.enabled || appSettings.enableFloatingButton === false || appSettings.enableAutoScrollLoad !== false) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
+      if (appSettings.enabled && appSettings.enableAutoScrollLoad !== false) {
+        setupAutoScrollLoader();
+      }
       return;
     }
 
@@ -1459,14 +1507,7 @@
       return;
     }
 
-    const legacyHiddenRecords = Math.max(
-      0,
-      (lastStatus.totalMessages || 0) - (lastStatus.renderedMessages || 0)
-    );
-    const olderExists = domHiddenTurns > 0 ||
-                        lastStatus.serverHasOlder === true ||
-                        lastStatus.hasOlderMessages === true ||
-                        legacyHiddenRecords > 0;
+    const olderExists = hasOlderTurnsToLoad();
 
     if (!olderExists) {
       if (existingPill) existingPill.remove();
@@ -1559,6 +1600,7 @@
   let wheelListenerCallback = null;
   let touchStartCallback = null;
   let touchMoveCallback = null;
+  let keyListenerCallback = null;
   let lastScrollTopPos = 0;
   let touchStartY = 0;
 
@@ -1576,7 +1618,9 @@
     loader.style.opacity = "1";
     loader.style.transform = "translateY(0)";
     const chatContainer = getChatScrollContainer();
-    const firstVisible = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)');
+    const firstVisible = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)') ||
+                         (chatContainer ? chatContainer.querySelector('[data-testid^="conversation-turn-"]') : null) ||
+                         (chatContainer ? chatContainer.firstElementChild : null);
     const target = firstVisible ? getTurnItemContainer(firstVisible) : null;
     if (target && target.parentNode) {
       target.parentNode.insertBefore(loader, target);
@@ -1639,7 +1683,27 @@
       return true;
     }
 
+    // When no turns are locally hidden in DOM, but older turns exist in conversation history
+    if (hasOlderTurnsToLoad()) {
+      isAutoLoadingBatch = true;
+      showScrollLoader();
+      stashScrollPosition();
+      const currentExtra = safeJsonParse(localStorage.getItem(EXTRA_KEY), {}).extra || 0;
+      localStorage.setItem(EXTRA_KEY, JSON.stringify({ url: window.location.href, extra: currentExtra + batchSize }));
+      setTimeout(() => {
+        window.location.reload();
+      }, 200);
+      return true;
+    }
+
     return false;
+  }
+
+  function getEffectiveScrollTop() {
+    const container = getChatScrollContainer();
+    const cst = container ? container.scrollTop : 0;
+    const wst = window.scrollY || document.documentElement.scrollTop || (document.body ? document.body.scrollTop : 0);
+    return Math.max(cst, wst);
   }
 
   function setupAutoScrollLoader() {
@@ -1648,67 +1712,66 @@
       return;
     }
 
-    const hiddenEls = document.querySelectorAll(".turbogpt-dom-hidden");
-    if (hiddenEls.length === 0) {
+    if (!hasOlderTurnsToLoad()) {
       removeAutoScrollLoader();
       return;
     }
 
     const chatContainer = getChatScrollContainer();
-    if (!chatContainer) return;
 
-    const firstVisible = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)');
-    if (!firstVisible) return;
-
-    const targetContainer = getTurnItemContainer(firstVisible) || firstVisible;
-    let sentinel = document.getElementById("turbogpt-scroll-sentinel");
-
-    if (!sentinel) {
-      sentinel = document.createElement("div");
-      sentinel.id = "turbogpt-scroll-sentinel";
-      sentinel.className = "turbogpt-scroll-sentinel";
-      sentinel.setAttribute("aria-hidden", "true");
-    }
-
-    if (targetContainer.parentNode && targetContainer.previousElementSibling !== sentinel) {
-      targetContainer.parentNode.insertBefore(sentinel, targetContainer);
-    }
-
-    if (!scrollIntersectionObserver || sentinel.dataset.observed !== "true") {
-      if (scrollIntersectionObserver) scrollIntersectionObserver.disconnect();
-      scrollIntersectionObserver = new IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting && !isAutoLoadingBatch) {
-            unhideOlderBatch({ fromScroll: true });
-          }
+    // Sentinel for intersection observation
+    if (chatContainer) {
+      const firstVisible = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)') ||
+                           chatContainer.querySelector('[data-testid^="conversation-turn-"]') ||
+                           chatContainer.firstElementChild;
+      if (firstVisible) {
+        const targetContainer = getTurnItemContainer(firstVisible) || firstVisible;
+        let sentinel = document.getElementById("turbogpt-scroll-sentinel");
+        if (!sentinel) {
+          sentinel = document.createElement("div");
+          sentinel.id = "turbogpt-scroll-sentinel";
+          sentinel.className = "turbogpt-scroll-sentinel";
+          sentinel.setAttribute("aria-hidden", "true");
         }
-      }, {
-        root: null,
-        rootMargin: "250px 0px 0px 0px",
-        threshold: 0
-      });
-      scrollIntersectionObserver.observe(sentinel);
-      sentinel.dataset.observed = "true";
+        if (targetContainer.parentNode && targetContainer.previousElementSibling !== sentinel) {
+          targetContainer.parentNode.insertBefore(sentinel, targetContainer);
+        }
+        if (!scrollIntersectionObserver || sentinel.dataset.observed !== "true") {
+          if (scrollIntersectionObserver) scrollIntersectionObserver.disconnect();
+          scrollIntersectionObserver = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+              const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
+              if (entry.isIntersecting && !isAutoLoadingBatch && domHidden > 0) {
+                unhideOlderBatch({ fromScroll: true });
+              }
+            }
+          }, {
+            root: null,
+            rootMargin: "250px 0px 0px 0px",
+            threshold: 0
+          });
+          scrollIntersectionObserver.observe(sentinel);
+          sentinel.dataset.observed = "true";
+        }
+      }
     }
 
-    // Wheel listener catches upward scroll even when scrollTop is 0 (e.g. Visible Messages = 1)
+    // 1. Wheel listener: catches upward mouse wheel / trackpad scroll even when scrollTop is 0 (e.g. Visible Messages = 1)
     if (!wheelListenerCallback) {
       wheelListenerCallback = (e) => {
         if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
         if (e.deltaY < 0) {
-          const hidden = document.querySelectorAll(".turbogpt-dom-hidden");
-          if (hidden.length === 0) return;
-          const container = getChatScrollContainer();
-          const st = container ? container.scrollTop : (window.scrollY || document.documentElement.scrollTop || 0);
+          const st = getEffectiveScrollTop();
           if (st <= 150) {
             unhideOlderBatch({ fromScroll: true });
           }
         }
       };
-      window.addEventListener("wheel", wheelListenerCallback, { passive: true });
+      window.addEventListener("wheel", wheelListenerCallback, { capture: true, passive: true });
+      document.addEventListener("wheel", wheelListenerCallback, { capture: true, passive: true });
     }
 
-    // Touch listeners
+    // 2. Touch listeners: catches mobile/tablet swipe down
     if (!touchStartCallback) {
       touchStartCallback = (e) => {
         touchStartY = e.touches[0]?.clientY || 0;
@@ -1716,22 +1779,33 @@
       touchMoveCallback = (e) => {
         if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
         const currentY = e.touches[0]?.clientY || 0;
-        if (currentY - touchStartY > 40) {
-          const hidden = document.querySelectorAll(".turbogpt-dom-hidden");
-          if (hidden.length === 0) return;
-          const container = getChatScrollContainer();
-          const st = container ? container.scrollTop : (window.scrollY || document.documentElement.scrollTop || 0);
+        if (currentY - touchStartY > 35) {
+          const st = getEffectiveScrollTop();
           if (st <= 150) {
             unhideOlderBatch({ fromScroll: true });
           }
         }
       };
-      window.addEventListener("touchstart", touchStartCallback, { passive: true });
-      window.addEventListener("touchmove", touchMoveCallback, { passive: true });
+      window.addEventListener("touchstart", touchStartCallback, { capture: true, passive: true });
+      window.addEventListener("touchmove", touchMoveCallback, { capture: true, passive: true });
     }
 
-    // Passive scroll listener
-    if (chatContainer !== scrollContainerWithListener) {
+    // 3. Keyboard listener: catches PageUp or Ctrl+ArrowUp at the top
+    if (!keyListenerCallback) {
+      keyListenerCallback = (e) => {
+        if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
+        if (e.key === "PageUp" || (e.key === "ArrowUp" && (e.ctrlKey || e.metaKey))) {
+          const st = getEffectiveScrollTop();
+          if (st <= 150) {
+            unhideOlderBatch({ fromScroll: true });
+          }
+        }
+      };
+      window.addEventListener("keydown", keyListenerCallback, { passive: true });
+    }
+
+    // 4. Scroll listener on chat container (catches scrollbar drag / momentum scrolling up)
+    if (chatContainer && chatContainer !== scrollContainerWithListener) {
       if (scrollContainerWithListener && scrollListenerCallback) {
         scrollContainerWithListener.removeEventListener("scroll", scrollListenerCallback);
       }
@@ -1742,10 +1816,7 @@
         const isUp = currentST < lastScrollTopPos;
         lastScrollTopPos = currentST;
         if (isUp && currentST <= 150 && !isAutoLoadingBatch) {
-          const hidden = document.querySelectorAll(".turbogpt-dom-hidden");
-          if (hidden.length > 0) {
-            unhideOlderBatch({ fromScroll: true });
-          }
+          unhideOlderBatch({ fromScroll: true });
         }
       };
       chatContainer.addEventListener("scroll", scrollListenerCallback, { passive: true });
@@ -1763,14 +1834,19 @@
       scrollListenerCallback = null;
     }
     if (wheelListenerCallback) {
-      window.removeEventListener("wheel", wheelListenerCallback);
+      window.removeEventListener("wheel", wheelListenerCallback, { capture: true });
+      document.removeEventListener("wheel", wheelListenerCallback, { capture: true });
       wheelListenerCallback = null;
     }
     if (touchStartCallback) {
-      window.removeEventListener("touchstart", touchStartCallback);
-      window.removeEventListener("touchmove", touchMoveCallback);
+      window.removeEventListener("touchstart", touchStartCallback, { capture: true });
+      window.removeEventListener("touchmove", touchMoveCallback, { capture: true });
       touchStartCallback = null;
       touchMoveCallback = null;
+    }
+    if (keyListenerCallback) {
+      window.removeEventListener("keydown", keyListenerCallback);
+      keyListenerCallback = null;
     }
     const sentinel = document.getElementById("turbogpt-scroll-sentinel");
     if (sentinel) sentinel.remove();
