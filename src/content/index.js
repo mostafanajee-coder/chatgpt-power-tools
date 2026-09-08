@@ -1293,19 +1293,19 @@
 
   // Resilient element queries (Self-Healing Selectors)
   function getChatScrollContainer() {
-    const primary = document.querySelector('main [class*="react-scroll-to-bottom"]') ||
-                    document.querySelector('main div[class*="overflow-y-auto"]');
-    if (primary && (primary.scrollHeight > primary.clientHeight || primary.scrollTop > 0)) {
-      return primary;
-    }
+    const modernRoot = document.querySelector('[class*="group/scroll-root"]') ||
+                       document.querySelector('.group\\/scroll-root') ||
+                       document.querySelector('main [class*="react-scroll-to-bottom"]') ||
+                       document.querySelector('div[class*="overflow-y-auto"]');
+    if (modernRoot) return modernRoot;
 
-    const firstTurn = document.querySelector('[data-testid^="conversation-turn-"], article');
+    const firstTurn = document.querySelector('[data-testid^="conversation-turn-"], [data-testid^="conversation-turn"], article');
     if (firstTurn) {
       let curr = firstTurn.parentElement;
       while (curr && curr !== document.body && curr !== document.documentElement) {
         try {
           const style = window.getComputedStyle(curr);
-          if ((style.overflowY === "auto" || style.overflowY === "scroll") && curr.scrollHeight > curr.clientHeight) {
+          if (style.overflowY === "auto" || style.overflowY === "scroll") {
             return curr;
           }
         } catch {}
@@ -1313,9 +1313,9 @@
       }
     }
 
-    return primary ||
-           document.querySelector('main [role="presentation"]') ||
-           document.querySelector('main');
+    return document.querySelector('main [role="presentation"]') ||
+           document.querySelector('main') ||
+           document.documentElement;
   }
 
   function getAllConversationTurns() {
