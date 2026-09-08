@@ -1443,7 +1443,8 @@
   function renderFloatingLoadButton(force = false) {
     const existingPill = document.getElementById("turbogpt-floating-pill");
 
-    if (!appSettings.enabled || appSettings.enableFloatingButton === false) {
+    // When Auto-Load on Scroll is active, the floating button is hidden in favor of seamless scrolling
+    if (!appSettings.enabled || appSettings.enableFloatingButton === false || appSettings.enableAutoScrollLoad !== false) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
       return;
@@ -1555,7 +1556,11 @@
   let scrollIntersectionObserver = null;
   let scrollContainerWithListener = null;
   let scrollListenerCallback = null;
+  let wheelListenerCallback = null;
+  let touchStartCallback = null;
+  let touchMoveCallback = null;
   let lastScrollTopPos = 0;
+  let touchStartY = 0;
 
   function showScrollLoader() {
     let loader = document.getElementById("turbogpt-scroll-loader");
@@ -1678,14 +1683,54 @@
           }
         }
       }, {
-        root: chatContainer instanceof Window ? null : chatContainer,
-        rootMargin: "200px 0px 0px 0px",
+        root: null,
+        rootMargin: "250px 0px 0px 0px",
         threshold: 0
       });
       scrollIntersectionObserver.observe(sentinel);
       sentinel.dataset.observed = "true";
     }
 
+    // Wheel listener catches upward scroll even when scrollTop is 0 (e.g. Visible Messages = 1)
+    if (!wheelListenerCallback) {
+      wheelListenerCallback = (e) => {
+        if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
+        if (e.deltaY < 0) {
+          const hidden = document.querySelectorAll(".turbogpt-dom-hidden");
+          if (hidden.length === 0) return;
+          const container = getChatScrollContainer();
+          const st = container ? container.scrollTop : (window.scrollY || document.documentElement.scrollTop || 0);
+          if (st <= 150) {
+            unhideOlderBatch({ fromScroll: true });
+          }
+        }
+      };
+      window.addEventListener("wheel", wheelListenerCallback, { passive: true });
+    }
+
+    // Touch listeners
+    if (!touchStartCallback) {
+      touchStartCallback = (e) => {
+        touchStartY = e.touches[0]?.clientY || 0;
+      };
+      touchMoveCallback = (e) => {
+        if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
+        const currentY = e.touches[0]?.clientY || 0;
+        if (currentY - touchStartY > 40) {
+          const hidden = document.querySelectorAll(".turbogpt-dom-hidden");
+          if (hidden.length === 0) return;
+          const container = getChatScrollContainer();
+          const st = container ? container.scrollTop : (window.scrollY || document.documentElement.scrollTop || 0);
+          if (st <= 150) {
+            unhideOlderBatch({ fromScroll: true });
+          }
+        }
+      };
+      window.addEventListener("touchstart", touchStartCallback, { passive: true });
+      window.addEventListener("touchmove", touchMoveCallback, { passive: true });
+    }
+
+    // Passive scroll listener
     if (chatContainer !== scrollContainerWithListener) {
       if (scrollContainerWithListener && scrollListenerCallback) {
         scrollContainerWithListener.removeEventListener("scroll", scrollListenerCallback);
@@ -1711,6 +1756,21 @@
     if (scrollIntersectionObserver) {
       scrollIntersectionObserver.disconnect();
       scrollIntersectionObserver = null;
+    }
+    if (scrollContainerWithListener && scrollListenerCallback) {
+      scrollContainerWithListener.removeEventListener("scroll", scrollListenerCallback);
+      scrollContainerWithListener = null;
+      scrollListenerCallback = null;
+    }
+    if (wheelListenerCallback) {
+      window.removeEventListener("wheel", wheelListenerCallback);
+      wheelListenerCallback = null;
+    }
+    if (touchStartCallback) {
+      window.removeEventListener("touchstart", touchStartCallback);
+      window.removeEventListener("touchmove", touchMoveCallback);
+      touchStartCallback = null;
+      touchMoveCallback = null;
     }
     const sentinel = document.getElementById("turbogpt-scroll-sentinel");
     if (sentinel) sentinel.remove();
