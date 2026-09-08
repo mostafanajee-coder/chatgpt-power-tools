@@ -857,6 +857,22 @@
     return out;
   }
 
+  function extractMessagesFromMapping(mapping, currentNode) {
+    if (!mapping || typeof mapping !== "object" || !currentNode) return [];
+    const messages = [];
+    const seen = new Set();
+    let curr = currentNode;
+    while (curr && mapping[curr] && !seen.has(curr)) {
+      seen.add(curr);
+      const node = mapping[curr];
+      if (node.message) {
+        messages.unshift(node.message);
+      }
+      curr = node.parent;
+    }
+    return messages;
+  }
+
   async function collectFullConversation() {
     if (!lastConversationRequest) return { error: "no-conversation" };
     const { url, init, conversationId } = lastConversationRequest;
@@ -872,7 +888,20 @@
     } catch {
       return { error: "parse" };
     }
-    if (!data || !Array.isArray(data.messages)) return { error: "schema" };
+    if (!data) return { error: "schema" };
+
+    if (data.mapping && typeof data.current_node === "string") {
+      const chain = extractMessagesFromMapping(data.mapping, data.current_node);
+      return {
+        conversationId,
+        messages: apiMessagesToExport(chain),
+        complete: true,
+        pagesFetched: 1,
+        failureReason: null
+      };
+    }
+
+    if (!Array.isArray(data.messages)) return { error: "schema" };
 
     const result = await hydrateOlderMessages({
       baseUrl: url,
@@ -955,7 +984,12 @@
         return response;
       }
 
-      if (!data || !Array.isArray(data.messages)) {
+      if (!data) return response;
+
+      const isMessagesFormat = Array.isArray(data.messages);
+      const isMappingFormat = data.mapping && typeof data.mapping === "object" && typeof data.current_node === "string";
+
+      if (!isMessagesFormat && !isMappingFormat) {
         return response;
       }
 
@@ -969,11 +1003,6 @@
       }
       const myGeneration = countGeneration;
 
-      // Capture pagination truth BEFORE any mutation, for the counting path.
-      const originalPageInfo = data.page_info ? { ...data.page_info } : null;
-      const pageUserIdsOrdered = getUserIdsInOrder(data.messages);
-      const pageRecordIds = getRecordIds(data.messages);
-
       const extra = getExtraTurns();
       const autoScrollActive = config.enableAutoScrollLoad === true && extra === 0;
 
@@ -986,6 +1015,90 @@
         ? Math.max(50, config.messageLimit)
         : Math.max(1, config.messageLimit + extra);
 
+      if (isMappingFormat) {
+        const allMessages = extractMessagesFromMapping(data.mapping, data.current_node);
+        const totalUserTurns = countUserTurns(allMessages);
+        const allUserIdsOrdered = getUserIdsInOrder(allMessages);
+
+        let keptMessages = allMessages;
+        if (!autoScrollActive && totalUserTurns > payloadTurnLimit) {
+          keptMessages = trimConversationMessages(allMessages, payloadTurnLimit);
+          const firstKeptId = keptMessages[0]?.id;
+          if (firstKeptId) {
+            let targetNodeId = null;
+            for (const [nid, node] of Object.entries(data.mapping)) {
+              if (node.message?.id === firstKeptId || nid === firstKeptId) {
+                targetNodeId = nid;
+                break;
+              }
+            }
+            if (targetNodeId && data.mapping[targetNodeId]) {
+              data.mapping[targetNodeId].parent = "client-created-root";
+            }
+          }
+        }
+
+        const visibleTurns = autoScrollActive
+          ? Math.min(config.messageLimit + extra, totalUserTurns)
+          : countUserTurns(keptMessages);
+        const hasOlder = totalUserTurns > visibleTurns;
+
+        saveCountCache(conversationId, {
+          conversationId,
+          totalTurns: totalUserTurns,
+          complete: true,
+          countedAt: Date.now(),
+          pagesWalked: 0,
+          failureReason: null,
+          dedupeReliable: true,
+          newestKnownUserMessageId: lastNonNull(allUserIdsOrdered),
+          oldestKnownUserMessageId: allUserIdsOrdered.filter(Boolean)[0] || null
+        });
+        updateDiagnosticMax(totalUserTurns);
+
+        broadcastStatus({
+          conversationId,
+          visibleTurns,
+          totalMessages: allMessages.length,
+          renderedMessages: keptMessages.length,
+          totalBackendRecords: allMessages.length,
+          loadedBackendRecords: keptMessages.length,
+          visibleBackendRecords: keptMessages.length,
+          hasOlderMessages: hasOlder,
+          serverHasOlder: false,
+          extraTurns: extra,
+          turnLimit: config.messageLimit + extra,
+          hydratedPages: 0,
+          hydrationFailureReason: null,
+          reachedConversationStart: true,
+          rootId: keptMessages[0]?.id || null,
+          totalTurns: totalUserTurns,
+          countState: "complete",
+          countComplete: true,
+          countSource: "mapping-tree",
+          countFailureReason: null
+        });
+
+        const modifiedResponse = new Response(JSON.stringify(data), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: new Headers({
+            ...Object.fromEntries(response.headers.entries()),
+            "content-type": "application/json; charset=utf-8",
+            "content-length": undefined,
+            "content-encoding": undefined
+          })
+        });
+
+        Object.defineProperty(modifiedResponse, "url", { value: response.url });
+        return modifiedResponse;
+      }
+
+      // Capture pagination truth BEFORE any mutation, for the counting path.
+      const originalPageInfo = data.page_info ? { ...data.page_info } : null;
+      const pageUserIdsOrdered = getUserIdsInOrder(data.messages);
+      const pageRecordIds = getRecordIds(data.messages);
+
       // "Load older messages" fix: the requested turns may live on pages the
       // first response never contained. When (and ONLY when) the user has
       // explicitly asked for more, fetch older pages and merge them in before
@@ -995,7 +1108,9 @@
       let hydration = { pagesFetched: 0, reachedStart: false, failureReason: null };
       const serverHasOlderInitially = originalPageInfo?.has_previous_page === true;
 
-      if (extra > 0 && serverHasOlderInitially && countUserTurns(workingMessages) < payloadTurnLimit) {
+      const shouldHydrate = (extra > 0 || autoScrollActive) && serverHasOlderInitially && countUserTurns(workingMessages) < payloadTurnLimit;
+
+      if (shouldHydrate) {
         hydration = await hydrateOlderMessages({
           baseUrl: requestUrl,
           requestInit,

@@ -374,6 +374,21 @@ check("Auto-Load on Scroll: mainWorld buffers up to 50 turns when enableAutoScro
   mainWorldContent.includes("const autoScrollActive = config.enableAutoScrollLoad === true && extra === 0;") &&
   mainWorldContent.includes("Math.max(50, config.messageLimit)"));
 
+console.log("\n--- PART 8: Modern Mapping Tree & Virtualizer Spacer Preservation ---");
+check("Mapping Tree: mainWorld extracts conversation history from node tree",
+  mainWorldContent.includes("function extractMessagesFromMapping(mapping, currentNode)") &&
+  mainWorldContent.includes("const chain = extractMessagesFromMapping(data.mapping, data.current_node);") &&
+  mainWorldContent.includes("countSource: \"mapping-tree\""));
+
+check("Virtualizer Spacers: index.js preserves scroll spacers during DOM turn limit enforcement",
+  indexJsContent.includes("const isSpacer =") &&
+  indexJsContent.includes("c.classList.contains(\"h-[var(--last-known-height,var(--estimated-turn-height,50vh))]\")") &&
+  indexJsContent.includes("c.className.includes(\"min-h-\")"));
+
+check("Auto-Load on Scroll: hasOlderTurnsToLoad factors in manually unhidden turns",
+  indexJsContent.includes("lastStatus.totalTurns > (lastStatus.visibleTurns + manuallyUnhiddenTurnsCount)") &&
+  indexJsContent.includes("manuallyUnhiddenTurnsCount += batchSize;"));
+
 const totalPassed = results.filter((r) => r.pass).length;
 console.log(`\n================ ${totalPassed}/${results.length} passed ================`);
 if (totalPassed !== results.length) {

@@ -1431,7 +1431,11 @@
         );
         if (firstVisibleIdx > 0) {
           children.forEach((c, i) => {
-            if (i < firstVisibleIdx && !c.querySelector('[data-testid^="conversation-turn"]:not(.turbogpt-dom-hidden)')) {
+            const isSpacer = c.classList.contains("h-[var(--last-known-height,var(--estimated-turn-height,50vh))]") ||
+                             c.getAttribute("style")?.includes("turn-height") ||
+                             c.className.includes("min-h-") ||
+                             c.getAttribute("data-turn-id-container") === "client-created-root";
+            if (i < firstVisibleIdx && !isSpacer && !c.querySelector('[data-testid^="conversation-turn"]:not(.turbogpt-dom-hidden)')) {
               c.classList.add("turbogpt-dom-hidden");
               c.style.setProperty("display", "none", "important");
             }
@@ -1467,6 +1471,10 @@
     const domHiddenTurns = document.querySelectorAll(".turbogpt-dom-hidden").length;
     if (domHiddenTurns > 0) return true;
 
+    if (Number.isFinite(lastStatus.totalTurns) && Number.isFinite(lastStatus.visibleTurns)) {
+      if (lastStatus.totalTurns > (lastStatus.visibleTurns + manuallyUnhiddenTurnsCount)) return true;
+    }
+
     if (lastStatus.serverHasOlder === true || lastStatus.hasOlderMessages === true) return true;
 
     const legacyHiddenRecords = Math.max(
@@ -1480,10 +1488,6 @@
       (lastStatus.totalBackendRecords || 0) - (lastStatus.loadedBackendRecords || lastStatus.visibleBackendRecords || 0)
     );
     if (backendDiff > 0) return true;
-
-    if (Number.isFinite(lastStatus.totalTurns) && Number.isFinite(lastStatus.visibleTurns)) {
-      if (lastStatus.totalTurns > lastStatus.visibleTurns) return true;
-    }
 
     return false;
   }
@@ -1690,6 +1694,26 @@
 
     // When scrolling up, NEVER reload the browser automatically!
     if (options.fromScroll) {
+      if (hasOlderTurnsToLoad()) {
+        isAutoLoadingBatch = true;
+        showScrollLoader();
+        manuallyUnhiddenTurnsCount += batchSize;
+        enforceDomTurnLimit({ force: true });
+        renderFloatingLoadButton(true);
+
+        const chatContainer = getChatScrollContainer();
+        if (chatContainer && chatContainer.scrollTop <= 10 && chatContainer.scrollHeight > chatContainer.clientHeight) {
+          chatContainer.scrollBy({ top: 30, behavior: "instant" });
+        }
+
+        setTimeout(() => {
+          hideScrollLoader();
+          isAutoLoadingBatch = false;
+          setupAutoScrollLoader();
+        }, 250);
+        return true;
+      }
+
       removeAutoScrollLoader();
       return false;
     }

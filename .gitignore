@@ -6,3 +6,6 @@ Thumbs.db
 node_modules/
 _metadata/
 *.zip
+backups/
+scratch/
+screenshots/
