@@ -8,6 +8,7 @@
 
     const toggleEnabled = document.getElementById("toggleEnabled");
     const toggleLiveAutoTrim = document.getElementById("toggleLiveAutoTrim");
+    const toggleAutoScrollLoad = document.getElementById("toggleAutoScrollLoad");
     const toggleFloatingButton = document.getElementById("toggleFloatingButton");
     const toggleOutline = document.getElementById("toggleOutline");
     const toggleSearch = document.getElementById("toggleSearch");
@@ -39,6 +40,7 @@
       messageLimit: 15,
       loadBatchSize: 5,
       continuationTurns: 10,
+      enableAutoScrollLoad: true,
       enableFloatingButton: true,
       enableOutline: true,
       enableSearch: true,
@@ -159,6 +161,7 @@
         messageLimit: parseInt(messageLimitInput?.value, 10) || 15,
         loadBatchSize: parseInt(loadBatchSizeInput?.value, 10) || 5,
         continuationTurns: parseInt(continuationInput?.value, 10) || 10,
+        enableAutoScrollLoad: toggleAutoScrollLoad ? toggleAutoScrollLoad.checked : true,
         enableFloatingButton: toggleFloatingButton ? toggleFloatingButton.checked : true,
         enableOutline: toggleOutline ? toggleOutline.checked : true,
         enableSearch: toggleSearch ? toggleSearch.checked : true,
@@ -204,6 +207,7 @@
       if (loadBatchSizeInput) loadBatchSizeInput.value = s.loadBatchSize || 5;
       if (continuationInput) continuationInput.value = s.continuationTurns || 10;
 
+      if (toggleAutoScrollLoad) toggleAutoScrollLoad.checked = s.enableAutoScrollLoad !== false;
       if (toggleFloatingButton) toggleFloatingButton.checked = s.enableFloatingButton !== false;
       if (toggleOutline) toggleOutline.checked = s.enableOutline !== false;
       if (toggleSearch) toggleSearch.checked = s.enableSearch !== false;
@@ -212,7 +216,7 @@
       initialSettings = getCurrentSettings();
     });
 
-    [toggleEnabled, toggleLiveAutoTrim, toggleFloatingButton, toggleOutline, toggleSearch, toggleFolders].forEach(el => {
+    [toggleEnabled, toggleLiveAutoTrim, toggleAutoScrollLoad, toggleFloatingButton, toggleOutline, toggleSearch, toggleFolders].forEach(el => {
       if (el) el.addEventListener("change", () => saveSettings());
     });
 

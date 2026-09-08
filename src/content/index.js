@@ -17,6 +17,7 @@
     messageLimit: 15,
     loadBatchSize: 5,
     continuationTurns: 10,
+    enableAutoScrollLoad: true,
     enableFloatingButton: true,
     enableOutline: true,
     enableSearch: true,
@@ -1244,6 +1245,47 @@
         from { opacity: 0; transform: translateY(12px) scale(0.96); }
         to { opacity: 1; transform: translateY(0) scale(1); }
       }
+      @keyframes turbogptSpin {
+        to { transform: rotate(360deg); }
+      }
+      .turbogpt-scroll-loader {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+        margin: 12px auto;
+        padding: 8px 18px;
+        background: rgba(30, 41, 59, 0.88);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 9999px;
+        color: #f8fafc;
+        font-size: 12px;
+        font-weight: 500;
+        letter-spacing: 0.2px;
+        width: fit-content;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.28);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 40;
+        pointer-events: none;
+      }
+      .turbogpt-scroll-spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(255, 255, 255, 0.25);
+        border-top-color: #38bdf8;
+        border-radius: 50%;
+        animation: turbogptSpin 0.65s linear infinite;
+      }
+      .turbogpt-scroll-sentinel {
+        height: 1px;
+        width: 100%;
+        opacity: 0;
+        pointer-events: none;
+        margin: 0;
+        padding: 0;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -1487,25 +1529,7 @@
     }
 
     pill.querySelector("#turbogpt-load-batch-action").addEventListener("click", () => {
-      const hiddenEls = Array.from(document.querySelectorAll(".turbogpt-dom-hidden"));
-      if (hiddenEls.length > 0) {
-        // Smoothly unhide next batch directly in the DOM with scroll anchoring
-        const anchor = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)');
-        const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
-
-        manuallyUnhiddenTurnsCount += batchSize;
-        enforceDomTurnLimit({ force: true });
-        renderFloatingLoadButton(true);
-
-        if (anchor && chatContainer) {
-          const newTop = anchor.getBoundingClientRect().top;
-          const diff = newTop - anchorTop;
-          if (Math.abs(diff) > 1) {
-            chatContainer.scrollBy({ top: diff, behavior: "instant" });
-          }
-        }
-        return;
-      }
+      if (unhideOlderBatch({ fromScroll: false })) return;
 
       stashScrollPosition();
       const currentExtra = safeJsonParse(localStorage.getItem(EXTRA_KEY), {}).extra || 0;
@@ -1517,12 +1541,180 @@
       manuallyUnhiddenTurnsCount = 99999;
       enforceDomTurnLimit({ force: true });
       renderFloatingLoadButton(true);
+      removeAutoScrollLoader();
       if (lastStatus.serverHasOlder === true) {
         stashScrollPosition();
         localStorage.setItem(EXTRA_KEY, JSON.stringify({ url: window.location.href, extra: 9999 }));
         window.location.reload();
       }
     });
+  }
+
+  // 1a. Auto-Load Older Turns on Scroll Up (Zero Reload Lazy Loading)
+  let isAutoLoadingBatch = false;
+  let scrollIntersectionObserver = null;
+  let scrollContainerWithListener = null;
+  let scrollListenerCallback = null;
+  let lastScrollTopPos = 0;
+
+  function showScrollLoader() {
+    let loader = document.getElementById("turbogpt-scroll-loader");
+    if (!loader) {
+      loader = document.createElement("div");
+      loader.id = "turbogpt-scroll-loader";
+      loader.className = "turbogpt-scroll-loader";
+      loader.innerHTML = `
+        <div class="turbogpt-scroll-spinner"></div>
+        <span>Loading older messages...</span>
+      `;
+    }
+    loader.style.opacity = "1";
+    loader.style.transform = "translateY(0)";
+    const chatContainer = getChatScrollContainer();
+    const firstVisible = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)');
+    const target = firstVisible ? getTurnItemContainer(firstVisible) : null;
+    if (target && target.parentNode) {
+      target.parentNode.insertBefore(loader, target);
+    } else if (chatContainer) {
+      chatContainer.prepend(loader);
+    }
+  }
+
+  function hideScrollLoader() {
+    const loader = document.getElementById("turbogpt-scroll-loader");
+    if (loader) {
+      loader.style.opacity = "0";
+      loader.style.transform = "translateY(-4px)";
+      setTimeout(() => {
+        if (loader && loader.parentNode) loader.remove();
+      }, 180);
+    }
+  }
+
+  function unhideOlderBatch(options = {}) {
+    if (isAutoLoadingBatch) return false;
+    const batchSize = Math.max(1, appSettings.loadBatchSize || 5);
+    const hiddenEls = Array.from(document.querySelectorAll(".turbogpt-dom-hidden"));
+
+    if (hiddenEls.length > 0) {
+      isAutoLoadingBatch = true;
+      if (options.fromScroll) {
+        showScrollLoader();
+      }
+
+      const chatContainer = getChatScrollContainer();
+      const anchor = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)');
+      const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+
+      const performUnhide = () => {
+        manuallyUnhiddenTurnsCount += batchSize;
+        enforceDomTurnLimit({ force: true });
+        renderFloatingLoadButton(true);
+
+        if (anchor && chatContainer) {
+          const newTop = anchor.getBoundingClientRect().top;
+          const diff = newTop - anchorTop;
+          if (Math.abs(diff) > 1) {
+            chatContainer.scrollBy({ top: diff, behavior: "instant" });
+          }
+        }
+
+        hideScrollLoader();
+        setTimeout(() => {
+          isAutoLoadingBatch = false;
+          setupAutoScrollLoader();
+        }, 250);
+      };
+
+      if (options.fromScroll) {
+        setTimeout(performUnhide, 200);
+      } else {
+        performUnhide();
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  function setupAutoScrollLoader() {
+    if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false) {
+      removeAutoScrollLoader();
+      return;
+    }
+
+    const hiddenEls = document.querySelectorAll(".turbogpt-dom-hidden");
+    if (hiddenEls.length === 0) {
+      removeAutoScrollLoader();
+      return;
+    }
+
+    const chatContainer = getChatScrollContainer();
+    if (!chatContainer) return;
+
+    const firstVisible = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)');
+    if (!firstVisible) return;
+
+    const targetContainer = getTurnItemContainer(firstVisible) || firstVisible;
+    let sentinel = document.getElementById("turbogpt-scroll-sentinel");
+
+    if (!sentinel) {
+      sentinel = document.createElement("div");
+      sentinel.id = "turbogpt-scroll-sentinel";
+      sentinel.className = "turbogpt-scroll-sentinel";
+      sentinel.setAttribute("aria-hidden", "true");
+    }
+
+    if (targetContainer.parentNode && targetContainer.previousElementSibling !== sentinel) {
+      targetContainer.parentNode.insertBefore(sentinel, targetContainer);
+    }
+
+    if (!scrollIntersectionObserver || sentinel.dataset.observed !== "true") {
+      if (scrollIntersectionObserver) scrollIntersectionObserver.disconnect();
+      scrollIntersectionObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting && !isAutoLoadingBatch) {
+            unhideOlderBatch({ fromScroll: true });
+          }
+        }
+      }, {
+        root: chatContainer instanceof Window ? null : chatContainer,
+        rootMargin: "200px 0px 0px 0px",
+        threshold: 0
+      });
+      scrollIntersectionObserver.observe(sentinel);
+      sentinel.dataset.observed = "true";
+    }
+
+    if (chatContainer !== scrollContainerWithListener) {
+      if (scrollContainerWithListener && scrollListenerCallback) {
+        scrollContainerWithListener.removeEventListener("scroll", scrollListenerCallback);
+      }
+      scrollContainerWithListener = chatContainer;
+      lastScrollTopPos = chatContainer.scrollTop || 0;
+      scrollListenerCallback = () => {
+        const currentST = chatContainer.scrollTop || 0;
+        const isUp = currentST < lastScrollTopPos;
+        lastScrollTopPos = currentST;
+        if (isUp && currentST <= 150 && !isAutoLoadingBatch) {
+          const hidden = document.querySelectorAll(".turbogpt-dom-hidden");
+          if (hidden.length > 0) {
+            unhideOlderBatch({ fromScroll: true });
+          }
+        }
+      };
+      chatContainer.addEventListener("scroll", scrollListenerCallback, { passive: true });
+    }
+  }
+
+  function removeAutoScrollLoader() {
+    if (scrollIntersectionObserver) {
+      scrollIntersectionObserver.disconnect();
+      scrollIntersectionObserver = null;
+    }
+    const sentinel = document.getElementById("turbogpt-scroll-sentinel");
+    if (sentinel) sentinel.remove();
+    hideScrollLoader();
   }
 
   // 1b. Top-bar Export button (sits beside ChatGPT's own Share button)
@@ -3161,6 +3353,7 @@
     injectTopbarExportButton();
     injectBookmarkButtons();
     renderSidebarFolders();
+    setupAutoScrollLoader();
   }
 
   // SPA navigation: normal <-> temporary <-> another chat must never show the
@@ -3176,6 +3369,7 @@
     initialEnforcementDone = false;
     cachedFullConvMessages = null;
     cachedFullConvId = null;
+    removeAutoScrollLoader();
     // A new temporary chat gets a fresh session identity.
     if (isTemporaryChat() && !href.includes("/c/")) temporarySessionId = null;
     const scopeId = getStatsScopeId();
@@ -3210,6 +3404,7 @@
         renderFloatingLoadButton();
         injectBookmarkButtons();
         renderSidebarFolders();
+        setupAutoScrollLoader();
       }
       // Runs regardless of `enabled` so it can also remove itself when the
       // booster is switched off. Cheap: exits early once already placed.

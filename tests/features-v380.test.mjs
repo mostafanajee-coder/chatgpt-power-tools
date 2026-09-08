@@ -325,6 +325,41 @@ check("Live Auto-Trim: enforces on page load and skips live chat when false",
 check("Live Auto-Trim: passes { live: true } in MutationObserver",
   indexJsContent.includes("enforceDomTurnLimit({ live: true });"));
 
+/* ---------------- 7. Seamless Auto-Load on Scroll Up ---------------- */
+console.log("\n--- PART 7: Seamless Auto-Load on Scroll Up (Gemini-Style) ---");
+
+const bgJsContent = fs.readFileSync("src/background/background.js", "utf8");
+
+check("Auto-Load on Scroll: popup HTML contains toggleAutoScrollLoad checkbox",
+  popupHtmlContent.includes('id="toggleAutoScrollLoad"'));
+
+check("Auto-Load on Scroll: popup JS defaults enableAutoScrollLoad to true",
+  popupJsContent.includes("enableAutoScrollLoad: true"));
+
+check("Auto-Load on Scroll: index.js defaults enableAutoScrollLoad to true",
+  indexJsContent.includes("enableAutoScrollLoad: true"));
+
+check("Auto-Load on Scroll: background.js defaults enableAutoScrollLoad to true",
+  bgJsContent.includes("enableAutoScrollLoad: true"));
+
+check("Auto-Load on Scroll: index.js injects turbogpt-scroll-loader styles",
+  indexJsContent.includes(".turbogpt-scroll-loader") &&
+  indexJsContent.includes(".turbogpt-scroll-spinner"));
+
+check("Auto-Load on Scroll: index.js creates and observes turbogpt-scroll-sentinel",
+  indexJsContent.includes('sentinel.id = "turbogpt-scroll-sentinel"') &&
+  indexJsContent.includes("scrollIntersectionObserver = new IntersectionObserver"));
+
+check("Auto-Load on Scroll: index.js wires setupAutoScrollLoader into renderAllTools and MutationObserver",
+  indexJsContent.includes("function renderAllTools() {") &&
+  indexJsContent.includes("setupAutoScrollLoader();") &&
+  indexJsContent.includes("removeAutoScrollLoader();"));
+
+check("Auto-Load on Scroll: unhideOlderBatch uses scroll anchoring (diff check)",
+  indexJsContent.includes("function unhideOlderBatch(options = {})") &&
+  indexJsContent.includes("const diff = newTop - anchorTop;") &&
+  indexJsContent.includes("chatContainer.scrollBy({ top: diff, behavior: \"instant\" });"));
+
 const totalPassed = results.filter((r) => r.pass).length;
 console.log(`\n================ ${totalPassed}/${results.length} passed ================`);
 if (totalPassed !== results.length) {

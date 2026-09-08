@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.8.3-blue.svg?style=flat-square" alt="Version 3.8.3" />
+  <img src="https://img.shields.io/badge/Version-3.9.0-blue.svg?style=flat-square" alt="Version 3.9.0" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Privacy-100%25%20Local-emerald.svg?style=flat-square" alt="100% Local" />
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg?style=flat-square" alt="Zero dependencies" />
@@ -24,13 +24,12 @@
 - **Instant Acceleration**: Trims heavy historical messages from the browser DOM while preserving full context on ChatGPT's servers.
 - **Configurable Live Auto-Trim**: By default, turns are trimmed comfortably on page load/refresh so ongoing chats are never abruptly hidden. A dedicated toggle lets users enable live instant auto-trimming as new messages arrive if preferred.
 - **Smart Turn Trimming**: Automatically renders only the most recent Q&A turns for maximum typing and scrolling smoothness.
-- **Strict Scroll-Lock**: Prevents unwanted infinite-scroll loading freezes when navigating up.
 
-### 📑 2. Floating "Load More" Button
-- A floating glassmorphic pill docked at the top of the chat: `↑ Load +5 older turns`.
-- **In-DOM Unhiding with Scroll Anchoring**: If turns were hidden locally, loads them instantaneously without a page reload and without visual jumps.
-- **Reaches real history**: Older turns are fetched from the conversation API and merged in when navigating deep history.
-- **Configurable Batch Size**: Customize how many turns to load per click (2, 5, 10…) in extension settings.
+### ⚡ 2. Seamless Auto-Load on Scroll Up (Gemini-Style Lazy Loading)
+- **Zero-Click Reveal**: As you scroll up towards the beginning of the conversation, older turns reveal themselves automatically without pressing buttons.
+- **Micro Loading Spinner**: Displays a sleek glassmorphic loading indicator (`Loading older messages...`) right inline as new batches arrive.
+- **Pixel-Perfect Scroll Anchoring**: Exact viewport compensation (`newTop - oldTop`) guarantees the reading position never jitters or jumps.
+- **Optional Floating Pill**: The floating `↑ Load +5 older turns` pill is preserved as an optional manual shortcut with its own dedicated toggle.
 
 ### 🧭 3. Chat Navigator & Table of Contents (Outline)
 - Floating outline drawer on the right side listing all your prompts in the conversation (`#1`, `#2`, `#3`...).
