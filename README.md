@@ -1,4 +1,4 @@
-# ⚡ TurboGPT – Chat Speed Booster & Power Tools for ChatGPT
+# ⚡ TurboGPT - Chat Speed Booster & Power Tools for ChatGPT
 
 <p align="center">
   <img src="icons/icon128.png" alt="TurboGPT Logo" width="100" height="100" />
@@ -24,7 +24,7 @@
 - **Live Gauge in Popup**: View the exact percentage of context capacity used, percentage remaining, and estimated tokens left (calibrated for a 110,000 safe token ceiling).
 - **Dynamic Animated Progress Bar**: Smooth color transitions reflecting conversation load:
   - 🟢 **Healthy** (≤70%): Normal, optimal performance.
-  - 🟠 **Heavy** (70–85%): Large conversation reaching memory limits.
+  - 🟠 **Heavy** (70-85%): Large conversation reaching memory limits.
   - 🔴 **Critical** (>85%): High risk of hitting OpenAI context limit errors.
 - **In-Chat Floating Dock Badge**: Real-time consumption percentage displayed right inside ChatGPT with one-click token breakdown toast.
 - **Server Pagination Extrapolation**: Accurately scales full-conversation context estimates when older pages are stored on the server and not yet loaded into the DOM.
@@ -65,27 +65,27 @@
 - Create custom folders directly in ChatGPT's sidebar to organize your chats.
 - **Add/remove the current chat** to any folder with one click (`＋` / `✓` on hover).
 - **Expand a folder** to see its saved chats with real titles and open them directly; remove chats from folders anytime.
-- Rename (`✎`) or delete (`🗑`) folders — deleting a folder never deletes your chats.
+- Rename (`✎`) or delete (`🗑`) folders - deleting a folder never deletes your chats.
 - All folder data is stored locally per browser.
 
 ### 📄 8. Selective Chat Exporter
 - Pick exactly which messages to export via checkboxes (select all / none supported), then export to:
-  - **Microsoft Word (.docx)** — genuine OOXML document built from scratch with zero libraries; code blocks are preserved in monospace with shading.
+  - **Microsoft Word (.docx)** - genuine OOXML document built from scratch with zero libraries; code blocks are preserved in monospace with shading.
   - **Formatted PDF** (print view)
   - **Markdown (`.md`)**
   - **Plain Text (`.txt`)**
   - **Structured JSON**
-- **Structure survives**: fenced code blocks keep their language, links keep their URLs, and lists, tables, headings and quotes are preserved — not flattened into plain text.
+- **Structure survives**: fenced code blocks keep their language, links keep their URLs, and lists, tables, headings and quotes are preserved - not flattened into plain text.
 - Selective exports cover the messages currently loaded in the chat.
 
 ### 🗄️ 9. Whole-Conversation Export & Continuation
 
 For a chat that hit ChatGPT's length limit and won't accept new messages:
 
-- **📚 Full conversation (.md)** — fetches *every* turn from the conversation API, including ones trimmed for speed, **without** loading them into the page. The API returns the model's original markdown, so the archive is a faithful round-trip.
-- **🔗 Continuation prompt** — copies a ready-to-paste block with the last N turns (default `10`, set in the popup) plus an instruction telling the model to continue rather than restart.
+- **📚 Full conversation (.md)** - fetches *every* turn from the conversation API, including ones trimmed for speed, **without** loading them into the page. The API returns the model's original markdown, so the archive is a faithful round-trip.
+- **🔗 Continuation prompt** - copies a ready-to-paste block with the last N turns (default `10`, set in the popup) plus an instruction telling the model to continue rather than restart.
 
-Start a new chat, attach the `.md`, paste the continuation prompt, and carry on where you stopped. If the full fetch can't complete, the export says exactly how far it got and why — a partial archive is never presented as complete.
+Start a new chat, attach the `.md`, paste the continuation prompt, and carry on where you stopped. If the full fetch can't complete, the export says exactly how far it got and why - a partial archive is never presented as complete.
 
 ---
 
@@ -119,7 +119,7 @@ Start a new chat, attach the `.md`, paste the continuation prompt, and carry on 
 - **`src/page/mainWorld.js`**: `MAIN` world `fetch` interceptor that trims ChatGPT's conversation API payloads before React renders them.
 - **`src/content/index.js`**: In-page UI suite (Floating Pill, Navigator, Search, Bookmarks, Sidebar Folders, Export engine) driven by a debounced `MutationObserver`.
 - **`src/popup/`**: Clean, modern light/dark popup settings dashboard.
-- **DOCX engine**: Minimal ZIP writer (STORE method + CRC32) generating valid OOXML documents inline — no dependencies.
+- **DOCX engine**: Minimal ZIP writer (STORE method + CRC32) generating valid OOXML documents inline - no dependencies.
 
 ### 🧪 Tests
 
@@ -127,7 +127,7 @@ Start a new chat, attach the `.md`, paste the continuation prompt, and carry on 
 node tests/run.mjs
 ```
 
-No dependencies and no build step. Each suite loads the **real** extension source into `node:vm` with stubbed browser globals, then drives it with a scripted network and DOM — covering payload trimming, backwards pagination, turn counting, older-message hydration, stats plumbing, temporary chats, and the top-bar Export button.
+No dependencies and no build step. Each suite loads the **real** extension source into `node:vm` with stubbed browser globals, then drives it with a scripted network and DOM - covering payload trimming, backwards pagination, turn counting, older-message hydration, stats plumbing, temporary chats, and the top-bar Export button.
 
 ---
 
@@ -135,43 +135,43 @@ No dependencies and no build step. Each suite loads the **real** extension sourc
 
 ### v3.9.1
 - ⚡ **Real-Time Context Window & Token Consumption Meter**: Live gauge in popup displaying `% Used`, `% Left`, and estimated tokens remaining (calibrated for a 110,000 safe token window).
-- 🚥 **Tri-State Status Badges**: `Healthy` (≤70%), `Heavy` (70–85%), `Critical` (>85%) with dynamic gradient progress bars.
+- 🚥 **Tri-State Status Badges**: `Healthy` (≤70%), `Heavy` (70-85%), `Critical` (>85%) with dynamic gradient progress bars.
 - 🧭 **In-Chat Floating Dock Badge**: Instant percentage visibility in the floating dock with one-click token breakdown toast.
 - 📈 **Server-Side Turn Extrapolation**: Accurately scales full-conversation context estimates when older pages haven't yet been loaded into DOM.
 - 🎨 **Brand New 2D Flat Vector Identity**: Clean 2D speedometer gauge with custom turbocharger compressor iconography.
 
 ### v3.6.0
-- 🗄️ **Export the whole conversation, even the trimmed parts.** A new *Full conversation (.md)* action fetches every turn straight from the conversation API — including messages never rendered — **without** loading them into the page, so the speed booster stays on. Built for archiving a chat that hit ChatGPT's length limit.
+- 🗄️ **Export the whole conversation, even the trimmed parts.** A new *Full conversation (.md)* action fetches every turn straight from the conversation API - including messages never rendered - **without** loading them into the page, so the speed booster stays on. Built for archiving a chat that hit ChatGPT's length limit.
 - 🔗 **Continuation prompt**: one click copies a ready-to-paste block containing the last N turns (default 10, configurable) plus an instruction telling the model to continue rather than restart. Pair it with the exported file to resume a maxed-out conversation in a fresh chat.
-- 🧱 **Exports keep their structure now.** Extraction walks the DOM instead of flattening it with `innerText`: fenced code blocks with their language, links with their URLs, lists, tables, headings and quotes all survive. Previously everything became plain text — which also meant the `.docx` monospace/shaded code path could never trigger and the PDF's code styling was dead. Both work now.
+- 🧱 **Exports keep their structure now.** Extraction walks the DOM instead of flattening it with `innerText`: fenced code blocks with their language, links with their URLs, lists, tables, headings and quotes all survive. Previously everything became plain text - which also meant the `.docx` monospace/shaded code path could never trigger and the PDF's code styling was dead. Both work now.
 - 🧹 ChatGPT's own UI chrome (Copy/Edit buttons, code-block language labels) is no longer captured as if it were message content.
 - 🧪 Third test suite added (`tests/export.test.mjs`); the runner now covers 157 assertions.
 
 ### v3.5.0
-- 🔧 **"Load More" / "Load All" actually work now.** They previously could not reveal anything beyond the first API page, so in long chats "Load All" silently did nothing. TurboGPT now fetches older pages and merges them in before rendering — using the same proven backwards-pagination path as the counter.
+- 🔧 **"Load More" / "Load All" actually work now.** They previously could not reveal anything beyond the first API page, so in long chats "Load All" silently did nothing. TurboGPT now fetches older pages and merges them in before rendering - using the same proven backwards-pagination path as the counter.
 - ⏱️ Hydration runs **only** after an explicit click (never on a normal chat open, so zero-lag opening is unchanged), is strictly sequential, and is bounded by a 20-second budget plus a page circuit breaker. If it cannot reach the start, the chat still renders and a notice says how far it got and why.
 - 🧮 The floating pill no longer invents a hidden count from one API page: it shows `N older` only when a verified-complete count exists, and counts **turns**, not backend records.
-- ✅ **Test suite moved into the repo** (`node tests/run.mjs`) — 129 assertions that load the real extension source and run it against a scripted network and DOM. Still zero dependencies.
+- ✅ **Test suite moved into the repo** (`node tests/run.mjs`) - 129 assertions that load the real extension source and run it against a scripted network and DOM. Still zero dependencies.
 
 ### v3.4.0
-- 📤 **Export button in the chat top bar**, right beside ChatGPT's own Share button — no need to open the extension popup to export. Works in normal *and* temporary chats, and keeps working even when the turn counter is partial or unavailable.
+- 📤 **Export button in the chat top bar**, right beside ChatGPT's own Share button - no need to open the extension popup to export. Works in normal *and* temporary chats, and keeps working even when the turn counter is partial or unavailable.
 - 🔍 **Pagination contract is now learned, not guessed**: TurboGPT reads the shape (parameter names only) of ChatGPT's own "load older messages" request before blocking it, and reuses that exact contract for background counting. Parameter names such as `cursor` / `before` / `after` are detected instead of assumed.
-- 🩺 **Partial counts now say why**: the popup shows the concrete reason (`Partial — pagination cursor unavailable`, `rate limited by ChatGPT`, `server returned no older messages`, …) instead of a generic "not final".
+- 🩺 **Partial counts now say why**: the popup shows the concrete reason (`Partial - pagination cursor unavailable`, `rate limited by ChatGPT`, `server returned no older messages`, …) instead of a generic "not final".
 - ♻️ Bounded retry with backoff (500ms → 1s → 2s) for `429` / `5xx` responses during counting; still strictly sequential, never a request flood, and never reported as complete after exhausting retries.
 
 ### v3.3.0
 - 🔢 **Real conversation counter**: the stats ratio is now `visible user turns / total user turns` across the *whole* paginated conversation (e.g. `2 / 703`). Previously it showed backend record counts from a single API page (`6 / 14`), which never reflected the real chat size.
-- 🧮 Counting runs on a separate background path: it walks the conversation's own pagination with the untouched `fetch`, counts unique user-message IDs, and **never** injects those pages into the DOM — the speed booster is unchanged.
-- 🛡️ Honest count states — `Counting…`, `Partial count`, `Full count unavailable`, `recount pending`. A total is only reported as final when the walk provably reached the end with reliable de-duplication; it never guesses a cursor direction.
-- 🐛 Fixed stats showing `0 / 0`: the status broadcast could be emitted before the content script was listening and was then lost. It is now recoverable on demand, and missing data renders as `— / —` (“Waiting for chat data”) instead of a fake zero total.
+- 🧮 Counting runs on a separate background path: it walks the conversation's own pagination with the untouched `fetch`, counts unique user-message IDs, and **never** injects those pages into the DOM - the speed booster is unchanged.
+- 🛡️ Honest count states - `Counting…`, `Partial count`, `Full count unavailable`, `recount pending`. A total is only reported as final when the walk provably reached the end with reliable de-duplication; it never guesses a cursor direction.
+- 🐛 Fixed stats showing `0 / 0`: the status broadcast could be emitted before the content script was listening and was then lost. It is now recoverable on demand, and missing data renders as `- / -` (“Waiting for chat data”) instead of a fake zero total.
 - 🕵️ **Temporary chat support** (`?temporary-chat=true`): export works fully without a conversation ID, with a `ChatGPT-Temporary-<date>` filename fallback; the counter reports locally-known turns, clearly labelled as local-only.
-- 📊 `Memory Saved` renamed to `History Reduced` — it measures trimmed chat history, not browser RAM.
+- 📊 `Memory Saved` renamed to `History Reduced` - it measures trimmed chat history, not browser RAM.
 
 ### v3.2.0
 - ✅ Fixed: popup settings now persist correctly across page reloads (storage key mismatch).
 - 🔒 Security: all dynamic content is escaped before DOM injection (XSS hardening); removed unused Bearer-token interception entirely.
 - ⚡ Performance: replaced 2-second polling with a debounced MutationObserver; UI elements rebuild only when their state actually changes (no flicker).
-- 📁 Folders: full organizer — expand/open/remove chats, rename/delete folders, auto-captured titles.
+- 📁 Folders: full organizer - expand/open/remove chats, rename/delete folders, auto-captured titles.
 - 📄 Export: selective message export with checkboxes + genuine `.docx` generation (OOXML) with monospace code preservation; PDF export escapes content properly.
 - 🎨 Full dark-mode support for navigator, search bar, and export modal.
 - 📍 "Load More" restores your scroll position after reload.
@@ -180,4 +180,4 @@ No dependencies and no build step. Each suite loads the **real** extension sourc
 
 ## 📜 License
 
-This project is licensed under the **MIT License** — free and open for personal and commercial use.
+This project is licensed under the **MIT License** - free and open for personal and commercial use.
