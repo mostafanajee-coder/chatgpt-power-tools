@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.9.0-blue.svg?style=flat-square" alt="Version 3.9.0" />
+  <img src="https://img.shields.io/badge/Version-3.9.1-blue.svg?style=flat-square" alt="Version 3.9.1" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Privacy-100%25%20Local-emerald.svg?style=flat-square" alt="100% Local" />
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg?style=flat-square" alt="Zero dependencies" />
@@ -20,12 +20,21 @@
 
 ## 🌟 Key Features
 
-### 🚀 1. Long Chat Speed Booster (Zero Lag)
+### 📊 1. Real-Time Context Window & Token Consumption Meter
+- **Live Gauge in Popup**: View the exact percentage of context capacity used, percentage remaining, and estimated tokens left (calibrated for a 110,000 safe token ceiling).
+- **Dynamic Animated Progress Bar**: Smooth color transitions reflecting conversation load:
+  - 🟢 **Healthy** (≤70%): Normal, optimal performance.
+  - 🟠 **Heavy** (70–85%): Large conversation reaching memory limits.
+  - 🔴 **Critical** (>85%): High risk of hitting OpenAI context limit errors.
+- **In-Chat Floating Dock Badge**: Real-time consumption percentage displayed right inside ChatGPT with one-click token breakdown toast.
+- **Server Pagination Extrapolation**: Accurately scales full-conversation context estimates when older pages are stored on the server and not yet loaded into the DOM.
+
+### 🚀 2. Long Chat Speed Booster (Zero Lag)
 - **Instant Acceleration**: Trims heavy historical messages from the browser DOM while preserving full context on ChatGPT's servers.
 - **Configurable Live Auto-Trim**: By default, turns are trimmed comfortably on page load/refresh so ongoing chats are never abruptly hidden. A dedicated toggle lets users enable live instant auto-trimming as new messages arrive if preferred.
 - **Smart Turn Trimming**: Automatically renders only the most recent Q&A turns for maximum typing and scrolling smoothness.
 
-### ⚡ 2. Seamless Auto-Load on Scroll Up (Gemini-Style Lazy Loading)
+### ⚡ 3. Seamless Auto-Load on Scroll Up (Gemini-Style Lazy Loading)
 - **Zero-Click Reveal**: As you scroll up towards the beginning of the conversation, older turns reveal themselves automatically without pressing buttons.
 - **Micro Loading Spinner**: Displays a sleek glassmorphic loading indicator (`Loading older messages...`) right inline as new batches arrive.
 - **Pixel-Perfect Scroll Anchoring**: Exact viewport compensation (`newTop - oldTop`) guarantees the reading position never jitters or jumps.
@@ -94,12 +103,12 @@ Start a new chat, attach the `.md`, paste the continuation prompt, and carry on 
 
 1. **Clone or Download** this repository:
    ```bash
-   git clone https://github.com/mostafanajee-coder/turbogpt.git
+   git clone https://github.com/mostafanajee-coder/chatgpt-power-tools.git
    ```
 2. Open Chrome (or Edge / Brave / Opera) and navigate to `chrome://extensions`.
 3. Enable **Developer mode** in the top right corner.
-4. Click **Load unpacked** (تحميل إضافة تم فك حزمتها).
-5. Select the `turbogpt` folder.
+4. Click **Load unpacked**.
+5. Select the `chatgpt-power-tools` folder.
 6. Navigate to [ChatGPT](https://chatgpt.com) and enjoy instant, lag-free conversations!
 
 ---
@@ -123,6 +132,13 @@ No dependencies and no build step. Each suite loads the **real** extension sourc
 ---
 
 ## 📜 Changelog
+
+### v3.9.1
+- ⚡ **Real-Time Context Window & Token Consumption Meter**: Live gauge in popup displaying `% Used`, `% Left`, and estimated tokens remaining (calibrated for a 110,000 safe token window).
+- 🚥 **Tri-State Status Badges**: `Healthy` (≤70%), `Heavy` (70–85%), `Critical` (>85%) with dynamic gradient progress bars.
+- 🧭 **In-Chat Floating Dock Badge**: Instant percentage visibility in the floating dock with one-click token breakdown toast.
+- 📈 **Server-Side Turn Extrapolation**: Accurately scales full-conversation context estimates when older pages haven't yet been loaded into DOM.
+- 🎨 **Brand New 2D Flat Vector Identity**: Clean 2D speedometer gauge with custom turbocharger compressor iconography.
 
 ### v3.6.0
 - 🗄️ **Export the whole conversation, even the trimmed parts.** A new *Full conversation (.md)* action fetches every turn straight from the conversation API — including messages never rendered — **without** loading them into the page, so the speed booster stays on. Built for archiving a chat that hit ChatGPT's length limit.
