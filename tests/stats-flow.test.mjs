@@ -357,6 +357,110 @@ const injectorSrc = grab("injectTopbarExportButton", contentSrc) + grab("buildTo
 check("15. Export button code never reads counter state",
   !/lastStatus|countState|totalTurns|countComplete/.test(injectorSrc));
 
+console.log("\n--- PART D: Context Window & Token Meter ---");
+function makeContextPopup() {
+  const els = {
+    statMemorySaved: { textContent: "" },
+    statShown: { textContent: "" },
+    statHidden: { textContent: "" },
+    statCountNote: { textContent: "" },
+    memoryRingFill: { setAttribute() {} },
+    statContextUsed: { textContent: "" },
+    statContextRemaining: { textContent: "" },
+    statContextTokens: { textContent: "" },
+    contextProgressFill: { style: {}, className: "" },
+    contextStatusPill: { textContent: "", className: "" }
+  };
+  const ctx = {
+    document: { getElementById: (id) => els[id] || null },
+    Number, Math, String, Object, console
+  };
+  vm.createContext(ctx);
+  vm.runInContext(`${renderStatsSrc}\nglobalThis.__render = renderStats;`, ctx);
+  return {
+    render: (s) => { ctx.__render(s); return {
+      used: els.statContextUsed.textContent,
+      remaining: els.statContextRemaining.textContent,
+      tokens: els.statContextTokens.textContent,
+      barWidth: els.contextProgressFill.style.width,
+      barClass: els.contextProgressFill.className,
+      pillText: els.contextStatusPill.textContent,
+      pillClass: els.contextStatusPill.className
+    }; }
+  };
+}
+
+const ctxPopup = makeContextPopup();
+const ctxRes1 = ctxPopup.render({
+  available: true,
+  visibleTurns: 10,
+  totalTurns: 10,
+  contextStats: {
+    totalChars: 289753,
+    estimatedTokens: 90548,
+    contextUsedPct: 82,
+    contextRemainingPct: 18,
+    contextRemainingTokens: 19452,
+    contextStatus: "warning"
+  }
+});
+
+check("16. context used percentage rendered correctly", ctxRes1.used === "82% Used", ctxRes1.used);
+check("16b. context remaining tokens formatted", ctxRes1.remaining.includes("18% Left"), ctxRes1.remaining);
+check("16c. progress bar fill width matches percentage", ctxRes1.barWidth === "82%", ctxRes1.barWidth);
+check("16d. progress bar color matches status warning", ctxRes1.barClass.includes("warning"), ctxRes1.barClass);
+check("16e. status pill says Heavy on 82%", ctxRes1.pillText === "Heavy", ctxRes1.pillText);
+
+const ctxRes2 = ctxPopup.render({ available: false });
+check("17. em-dash shown when context stats unavailable", ctxRes2.used === "—", ctxRes2.used);
+check("17b. bar width is 0% on initial", ctxRes2.barWidth === "0%", ctxRes2.barWidth);
+
+// Direct extraction and testing of computeContextUsage
+const computeContextUsageSrc = contentSrc.slice(
+  contentSrc.indexOf("function computeContextUsage() {"),
+  contentSrc.indexOf("function timestampSlug()")
+);
+
+function makeContextUsageTester() {
+  const turns = [];
+  let lastStatus = { totalTurns: 0 };
+  const ctx = {
+    getAllConversationTurns: () => turns,
+    document: { querySelectorAll: () => turns },
+    lastStatus,
+    Array, Math, String, Number
+  };
+  vm.createContext(ctx);
+  vm.runInContext(`${computeContextUsageSrc}\nglobalThis.__compute = computeContextUsage;`, ctx);
+  return {
+    setTurns: (newTurns) => { turns.length = 0; turns.push(...newTurns); },
+    setLastStatus: (s) => { Object.assign(ctx.lastStatus, s); },
+    compute: () => ctx.__compute()
+  };
+}
+
+const usageTester = makeContextUsageTester();
+
+// 18. Empty turns -> 0% used, 100% remaining
+const emptyRes = usageTester.compute();
+check("18. computeContextUsage on empty chat returns 0% used", emptyRes.contextUsedPct === 0, `${emptyRes.contextUsedPct}%`);
+check("18b. computeContextUsage on empty chat gives 110k remaining tokens", emptyRes.contextRemainingTokens === 110000, `${emptyRes.contextRemainingTokens}`);
+
+// 18c. Simulated 32,000 chars (~10,000 tokens) -> ~9% used, safe
+usageTester.setTurns([
+  { innerText: "x".repeat(16000), querySelector: () => true, getAttribute: () => "user" },
+  { innerText: "y".repeat(16000), querySelector: () => null, getAttribute: () => "assistant" }
+]);
+const midRes = usageTester.compute();
+check("18c. computeContextUsage calculates estimated tokens correctly", midRes.estimatedTokens === 10000, `${midRes.estimatedTokens}`);
+check("18d. computeContextUsage assigns safe status under 70%", midRes.contextStatus === "safe", midRes.contextStatus);
+
+// 18e. Server extrapolation: 1 user turn in DOM out of 10 on server
+usageTester.setLastStatus({ totalTurns: 10 });
+const scaledRes = usageTester.compute();
+check("18e. computeContextUsage scales estimation with server totalTurns", scaledRes.estimatedTokens === 100000, `${scaledRes.estimatedTokens}`);
+check("18f. computeContextUsage marks danger status over 85%", scaledRes.contextStatus === "danger", `${scaledRes.contextUsedPct}% -> ${scaledRes.contextStatus}`);
+
 const failed = results.filter((x) => !x.pass);
 console.log(`\n================ ${results.length - failed.length}/${results.length} passed ================`);
 if (failed.length) {

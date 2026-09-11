@@ -96,6 +96,63 @@
     return document.querySelectorAll('[data-message-author-role="user"]').length;
   }
 
+  function computeContextUsage() {
+    try {
+      const turns = typeof getAllConversationTurns === "function" ? getAllConversationTurns() : Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], [data-testid^="conversation-turn"], article'));
+      if (!turns || turns.length === 0) {
+        return {
+          totalChars: 0,
+          totalWords: 0,
+          estimatedTokens: 0,
+          contextUsedPct: 0,
+          contextRemainingPct: 100,
+          contextRemainingTokens: 110000,
+          contextStatus: "safe"
+        };
+      }
+
+      const text = turns.map((t) => t.innerText || "").join(" ");
+      let totalChars = text.length;
+      let totalWords = text.trim() ? text.trim().split(/\s+/).length : 0;
+      let estimatedTokens = Math.round(totalChars / 3.2);
+
+      // If background pagination has counted more user turns on the server than what is currently loaded in the DOM,
+      // scale up the estimate so the user gets an accurate warning of total conversation context consumption.
+      const userTurns = turns.filter((t) => t.querySelector('[data-message-author-role="user"]') || t.getAttribute('data-message-author-role') === 'user');
+      const domUserTurns = userTurns.length;
+      if (typeof lastStatus !== "undefined" && Number.isFinite(lastStatus.totalTurns) && lastStatus.totalTurns > domUserTurns && domUserTurns > 0) {
+        const factor = lastStatus.totalTurns / domUserTurns;
+        estimatedTokens = Math.round(estimatedTokens * factor);
+        totalChars = Math.round(totalChars * factor);
+        totalWords = Math.round(totalWords * factor);
+      }
+
+      const maxSafeTokens = 110000;
+      const contextUsedPct = Math.min(100, Math.round((estimatedTokens / maxSafeTokens) * 100));
+      const contextRemainingPct = Math.max(0, 100 - contextUsedPct);
+      const contextRemainingTokens = Math.max(0, maxSafeTokens - estimatedTokens);
+
+      let contextStatus = "safe";
+      if (contextUsedPct > 85) {
+        contextStatus = "danger";
+      } else if (contextUsedPct > 70) {
+        contextStatus = "warning";
+      }
+
+      return {
+        totalChars,
+        totalWords,
+        estimatedTokens,
+        contextUsedPct,
+        contextRemainingPct,
+        contextRemainingTokens,
+        contextStatus
+      };
+    } catch {
+      return null;
+    }
+  }
+
   function timestampSlug() {
     const d = new Date();
     const p = (n) => String(n).padStart(2, "0");
@@ -284,7 +341,8 @@
           countComplete: false,
           totalMessages: lastStatus.totalMessages,
           renderedMessages: lastStatus.renderedMessages,
-          hasOlderMessages: lastStatus.hasOlderMessages
+          hasOlderMessages: lastStatus.hasOlderMessages,
+          contextStats: computeContextUsage()
         });
         return true;
       }
@@ -331,7 +389,8 @@
         countState: lastStatus.countState,
         countComplete: lastStatus.countComplete,
         countFailureReason: lastStatus.countFailureReason,
-        countContractSource: lastStatus.countContractSource
+        countContractSource: lastStatus.countContractSource,
+        contextStats: computeContextUsage()
       });
       return true;
     }
@@ -473,6 +532,17 @@
         border-radius: 9999px;
         border: 2px solid #ffffff;
       }
+      .turbogpt-dock-context {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      .turbogpt-dock-ctx-text {
+        font-size: 10.5px;
+        font-weight: 800;
+        letter-spacing: -0.2px;
+      }
+      .turbogpt-dock-ctx-text.safe { color: #10b981; }
+      .turbogpt-dock-ctx-text.warning { color: #f59e0b; }
+      .turbogpt-dock-ctx-text.danger { color: #ef4444; }
 
       /* Outline Drawer */
       .turbogpt-outline-drawer {
@@ -2057,7 +2127,9 @@
       return !turn.classList.contains("turbogpt-dom-hidden") && turn.style.display !== "none" && (!turn.parentElement || turn.parentElement.style.display !== "none");
     });
     const userCount = visibleUser.length < allUser.length ? `${visibleUser.length}` : `${allUser.length}`;
-    const signature = `${appSettings.enableSearch}|${appSettings.enableOutline}|${visibleUser.length}|${allUser.length}`;
+    const ctxUsage = computeContextUsage();
+    const ctxSignature = ctxUsage ? `${ctxUsage.contextUsedPct}|${ctxUsage.contextStatus}` : "none";
+    const signature = `${appSettings.enableSearch}|${appSettings.enableOutline}|${visibleUser.length}|${allUser.length}|${ctxSignature}`;
 
     if (dock && dock.dataset.sig === signature) return;
 
@@ -2071,6 +2143,11 @@
     dock.style.display = "flex";
 
     dock.innerHTML = `
+      ${ctxUsage && ctxUsage.totalChars > 0 ? `
+        <button class="turbogpt-dock-btn turbogpt-dock-context" id="turbogpt-dock-context" title="Context Used: ${ctxUsage.contextUsedPct}% (${ctxUsage.contextRemainingPct}% remaining, ~${ctxUsage.contextRemainingTokens.toLocaleString()} tokens left)">
+          <span class="turbogpt-dock-ctx-text ${ctxUsage.contextStatus}">${ctxUsage.contextUsedPct}%</span>
+        </button>
+      ` : ""}
       ${appSettings.enableSearch !== false ? `
         <button class="turbogpt-dock-btn" id="turbogpt-dock-search" title="Search in Chat (Alt + F)">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -2094,6 +2171,16 @@
       ` : ""}
     `;
 
+    const ctxBtn = dock.querySelector("#turbogpt-dock-context");
+    if (ctxBtn) {
+      ctxBtn.addEventListener("click", () => {
+        const c = computeContextUsage();
+        if (c) {
+          toast(`Context: ${c.contextUsedPct}% used, ${c.contextRemainingPct}% remaining (~${c.contextRemainingTokens.toLocaleString()} tokens left)`);
+        }
+      });
+    }
+
     const searchBtn = dock.querySelector("#turbogpt-dock-search");
     if (searchBtn) searchBtn.addEventListener("click", toggleSearchOverlay);
 
@@ -2111,6 +2198,19 @@
       });
       badge.textContent = visibleUser.length < allUser.length ? `${visibleUser.length}` : `${allUser.length}`;
       badge.title = `${visibleUser.length} visible of ${allUser.length} questions`;
+    }
+
+    const ctxBtn = document.getElementById("turbogpt-dock-context");
+    if (ctxBtn) {
+      const c = computeContextUsage();
+      if (c) {
+        ctxBtn.title = `Context Used: ${c.contextUsedPct}% (${c.contextRemainingPct}% remaining, ~${c.contextRemainingTokens.toLocaleString()} tokens left)`;
+        const txtEl = ctxBtn.querySelector(".turbogpt-dock-ctx-text");
+        if (txtEl) {
+          txtEl.textContent = `${c.contextUsedPct}%`;
+          txtEl.className = `turbogpt-dock-ctx-text ${c.contextStatus}`;
+        }
+      }
     }
   }
 

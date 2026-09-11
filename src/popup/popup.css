@@ -524,6 +524,127 @@ input:checked + .switch-slider:before {
 }
 
 /* =========================================================
+   CONTEXT WINDOW & TOKEN METER
+   ========================================================= */
+
+.context-meter-box {
+  margin-top: 10px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid var(--border-light);
+}
+
+.context-meter-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.context-meter-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.context-meter-icon-wrap {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--primary-50);
+  color: var(--primary-600);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.context-meter-title {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.context-status-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  align-items: center;
+  transition: all 0.2s ease;
+}
+
+.context-status-pill.safe {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.context-status-pill.warning {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.context-status-pill.danger {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.context-bar-track {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-hover);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.context-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s ease;
+  width: 0%;
+}
+
+.context-bar-fill.safe {
+  background: linear-gradient(90deg, #10b981, #059669);
+}
+
+.context-bar-fill.warning {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+}
+
+.context-bar-fill.danger {
+  background: linear-gradient(90deg, #ef4444, #b91c1c);
+}
+
+.context-meter-stats {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+}
+
+.context-stat-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.context-stat-main {
+  font-weight: 800;
+  font-size: 11.5px;
+  color: var(--text-main);
+}
+
+.context-stat-sub {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+/* =========================================================
    BUTTONS
    ========================================================= */
 

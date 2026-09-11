@@ -152,6 +152,46 @@
       if (ringFill) {
         ringFill.setAttribute("stroke-dasharray", `${savedPct}, 100`);
       }
+
+      // Context Window & Token Meter
+      const ctx = s.contextStats || null;
+      const ctxUsedEl = document.getElementById("statContextUsed");
+      const ctxRemainingEl = document.getElementById("statContextRemaining");
+      const ctxTokensEl = document.getElementById("statContextTokens");
+      const ctxBarFill = document.getElementById("contextProgressFill");
+      const ctxPill = document.getElementById("contextStatusPill");
+
+      if (ctx && Number.isFinite(ctx.contextUsedPct)) {
+        const used = ctx.contextUsedPct;
+        const remaining = ctx.contextRemainingPct;
+        const tokens = ctx.estimatedTokens || 0;
+        const remTokens = ctx.contextRemainingTokens || 0;
+        const status = ctx.contextStatus || "safe";
+
+        if (ctxUsedEl) ctxUsedEl.textContent = `${used}% Used`;
+        if (ctxRemainingEl) ctxRemainingEl.textContent = `${remaining}% Left (~${remTokens.toLocaleString()} tokens)`;
+        if (ctxTokensEl) ctxTokensEl.textContent = `~${tokens.toLocaleString()} / 110k tokens`;
+        if (ctxBarFill) {
+          ctxBarFill.style.width = `${Math.min(100, Math.max(used > 0 ? 2 : 0, used))}%`;
+          ctxBarFill.className = `context-bar-fill ${status}`;
+        }
+        if (ctxPill) {
+          ctxPill.className = `context-status-pill ${status}`;
+          ctxPill.textContent = status === "danger" ? "Critical" : (status === "warning" ? "Heavy" : "Healthy");
+        }
+      } else {
+        if (ctxUsedEl) ctxUsedEl.textContent = "—";
+        if (ctxRemainingEl) ctxRemainingEl.textContent = "Waiting for chat data…";
+        if (ctxTokensEl) ctxTokensEl.textContent = "";
+        if (ctxBarFill) {
+          ctxBarFill.style.width = "0%";
+          ctxBarFill.className = "context-bar-fill safe";
+        }
+        if (ctxPill) {
+          ctxPill.className = "context-status-pill safe";
+          ctxPill.textContent = "Ready";
+        }
+      }
     }
 
     function getCurrentSettings() {

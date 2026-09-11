@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TurboGPT – Chat Speed Booster & Exporter",
-  "version": "3.9.0",
-  "description": "Accelerates ChatGPT by eliminating UI lag in long chats. Selective chat export (Word .docx, PDF, Markdown, JSON), in-chat outline, bookmarks, search, and folders.",
+  "version": "3.9.1",
+  "description": "Accelerates ChatGPT by eliminating UI lag in long chats. Real-time context window & token meter, selective chat export (Word .docx, PDF, Markdown, JSON), in-chat outline, bookmarks, search, and folders.",
   "action": {
     "default_icon": {
       "16": "icons/icon16.png",
