@@ -17,7 +17,8 @@ const SUITES = [
   ["Counting path (mainWorld.js)", "count.test.mjs"],
   ["Stats flow + export button", "stats-flow.test.mjs"],
   ["Export pipeline (extraction, full export, continuation)", "export.test.mjs"],
-  ["v3.8.0 Features (DOM Limit, Backup, Full Search)", "features-v380.test.mjs"]
+  ["v3.8.0 Features (DOM Limit, Backup, Full Search)", "features-v380.test.mjs"],
+  ["v3.11.0 Smoothness (observer hygiene, no forced layout, caches)", "perf-v3110.test.mjs"]
 ];
 
 let failed = 0;

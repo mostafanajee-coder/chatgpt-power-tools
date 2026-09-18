@@ -408,6 +408,48 @@ check("Auto-Load on Scroll: hasOlderTurnsToLoad factors in manually unhidden tur
   indexJsContent.includes("lastStatus.totalTurns > (lastStatus.visibleTurns + manuallyUnhiddenTurnsCount)") &&
   indexJsContent.includes("manuallyUnhiddenTurnsCount += batchSize;"));
 
+/* ---------------- 9. Message Count Alert Threshold ---------------- */
+console.log("\n--- PART 9: Message Count Alert Threshold ---");
+
+check("Msg Count Alert: index.js defaults messageCountWarningThreshold to 120",
+  indexJsContent.includes("messageCountWarningThreshold: 120"));
+
+check("Msg Count Alert: popup.js defaults messageCountWarningThreshold to 120",
+  popupJsContent.includes("messageCountWarningThreshold: 120"));
+
+check("Msg Count Alert: background.js defaults messageCountWarningThreshold to 120",
+  bgJsContent.includes("messageCountWarningThreshold: 120"));
+
+check("Msg Count Alert: popup HTML exposes a configurable threshold input",
+  popupHtmlContent.includes('id="messageCountThreshold"'));
+
+check("Msg Count Alert: grows live from DOM turns, plus a backlog of trimmed-out history",
+  indexJsContent.includes("function computeMessageCountStatus() {") &&
+  indexJsContent.includes("const domUserTurns = countDomUserTurns();") &&
+  indexJsContent.includes("count = domUserTurns + (lastStatus.totalTurns - lastStatus.visibleTurns);"));
+
+check("Msg Count Alert: fires the crossing toast exactly once per conversation",
+  indexJsContent.includes("let messageCountNoticeShown = false;") &&
+  indexJsContent.includes("if (!messageCountNoticeShown) {"));
+
+check("Msg Count Alert: notice flag resets on conversation switch (checkNavigation)",
+  /statusReceived = false;\s*\n\s*messageCountNoticeShown = false;/.test(indexJsContent));
+
+// Reimplement the threshold classification to verify the safe/warning/danger
+// boundaries independent of DOM/chrome APIs (same style as PART 1's DOM-limit test).
+function classify(count, threshold) {
+  const pct = Math.min(100, Math.round((count / threshold) * 100));
+  let status = "safe";
+  if (count >= threshold) status = "danger";
+  else if (pct >= 70) status = "warning";
+  return status;
+}
+
+check("Msg Count Alert: below 70% of threshold is safe", classify(500, 1200) === "safe");
+check("Msg Count Alert: at 70% of threshold is warning", classify(840, 1200) === "warning");
+check("Msg Count Alert: at/above threshold is danger", classify(1200, 1200) === "danger" && classify(1500, 1200) === "danger");
+check("Msg Count Alert: just below threshold is still warning, not danger", classify(1199, 1200) === "warning");
+
 const totalPassed = results.filter((r) => r.pass).length;
 console.log(`\n================ ${totalPassed}/${results.length} passed ================`);
 if (totalPassed !== results.length) {

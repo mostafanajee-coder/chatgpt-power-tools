@@ -17,6 +17,7 @@
     const messageLimitInput = document.getElementById("messageLimit");
     const loadBatchSizeInput = document.getElementById("loadBatchSize");
     const continuationInput = document.getElementById("continuationTurns");
+    const messageCountThresholdInput = document.getElementById("messageCountThreshold");
 
     const msgLimitDec = document.getElementById("msgLimitDec");
     const msgLimitInc = document.getElementById("msgLimitInc");
@@ -24,6 +25,8 @@
     const batchLimitInc = document.getElementById("batchLimitInc");
     const continuationDec = document.getElementById("continuationDec");
     const continuationInc = document.getElementById("continuationInc");
+    const msgCountThresholdDec = document.getElementById("msgCountThresholdDec");
+    const msgCountThresholdInc = document.getElementById("msgCountThresholdInc");
 
     const refreshBtn = document.getElementById("refreshBtn");
     const saveBar = document.getElementById("saveBar");
@@ -40,6 +43,7 @@
       messageLimit: 15,
       loadBatchSize: 5,
       continuationTurns: 10,
+      messageCountWarningThreshold: 120,
       enableAutoScrollLoad: true,
       enableFloatingButton: true,
       enableOutline: true,
@@ -201,6 +205,7 @@
         messageLimit: parseInt(messageLimitInput?.value, 10) || 15,
         loadBatchSize: parseInt(loadBatchSizeInput?.value, 10) || 5,
         continuationTurns: parseInt(continuationInput?.value, 10) || 10,
+        messageCountWarningThreshold: parseInt(messageCountThresholdInput?.value, 10) || 120,
         enableAutoScrollLoad: toggleAutoScrollLoad ? toggleAutoScrollLoad.checked : true,
         enableFloatingButton: toggleFloatingButton ? toggleFloatingButton.checked : true,
         enableOutline: toggleOutline ? toggleOutline.checked : true,
@@ -246,6 +251,7 @@
       if (messageLimitInput) messageLimitInput.value = s.messageLimit;
       if (loadBatchSizeInput) loadBatchSizeInput.value = s.loadBatchSize || 5;
       if (continuationInput) continuationInput.value = s.continuationTurns || 10;
+      if (messageCountThresholdInput) messageCountThresholdInput.value = s.messageCountWarningThreshold || 120;
 
       if (toggleAutoScrollLoad) toggleAutoScrollLoad.checked = s.enableAutoScrollLoad !== false;
       if (toggleFloatingButton) toggleFloatingButton.checked = s.enableFloatingButton !== false;
@@ -340,6 +346,34 @@
         let val = parseInt(continuationInput.value, 10) || 10;
         val = Math.min(100, val + 1);
         continuationInput.value = val;
+        saveSettings();
+      });
+    }
+
+    if (messageCountThresholdInput) {
+      messageCountThresholdInput.addEventListener("change", () => {
+        let val = parseInt(messageCountThresholdInput.value, 10);
+        if (isNaN(val) || val < 50) val = 50;
+        if (val > 20000) val = 20000;
+        messageCountThresholdInput.value = val;
+        saveSettings();
+      });
+    }
+
+    if (msgCountThresholdDec) {
+      msgCountThresholdDec.addEventListener("click", () => {
+        let val = parseInt(messageCountThresholdInput.value, 10) || 120;
+        val = Math.max(50, val - 50);
+        messageCountThresholdInput.value = val;
+        saveSettings();
+      });
+    }
+
+    if (msgCountThresholdInc) {
+      msgCountThresholdInc.addEventListener("click", () => {
+        let val = parseInt(messageCountThresholdInput.value, 10) || 120;
+        val = Math.min(20000, val + 50);
+        messageCountThresholdInput.value = val;
         saveSettings();
       });
     }

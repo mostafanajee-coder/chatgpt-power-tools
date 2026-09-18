@@ -864,12 +864,48 @@ async function scenarioHydrationDedup() {
   check("HydrateDedup: merged turn count correct", bodyUserTurns(body) === 4, `${bodyUserTurns(body)}`);
 }
 
+// The real-world bug: the server doesn't recognise the hardcoded default
+// guess ("cursor") and just echoes the same page back, which used to be
+// reported as "no-progress" after page 1 even though older turns exist.
+async function scenarioHydrationDiscoversRealParamWhenGuessIsWrong() {
+  const statuses = [];
+  const page1 = userPage(["u9", "u10"], { hasPrev: true }); // no start_cursor field
+  const page2 = userPage(["u5", "u6", "u7", "u8"], { hasPrev: false });
+
+  const { ctx } = boot({
+    onStatus: (p) => statuses.push({ ...p }),
+    routes: (url) => {
+      if (url.includes("before=u9")) return makeResponse(page2);
+      // "cursor=u9" (and the plain base URL) both just get page 1 back.
+      return makeResponse(page1);
+    }
+  });
+  ctx.localStorage.setItem("turbogpt_config", JSON.stringify({ enabled: true, messageLimit: 2 }));
+  ctx.localStorage.setItem("turbogpt_extra_turns", JSON.stringify({
+    url: ctx.window.location.href, extra: 9999
+  }));
+
+  const res = await ctx.window.fetch(BASE);
+  const body = await res.json();
+  await settle();
+
+  check("Discover: finds the real parameter name once the default guess fails",
+    bodyUserTurns(body) === 6, `${bodyUserTurns(body)}`);
+  const fin = statuses[statuses.length - 1] || {};
+  check("Discover: reaches the conversation start once the real param is found",
+    fin.reachedConversationStart === true, `${fin.reachedConversationStart}`);
+  const learned = JSON.parse(ctx.localStorage.getItem("turbogpt_pagination_contract") || "{}");
+  check("Discover: learned contract cached for future requests",
+    learned.parameterName === "before", JSON.stringify(learned));
+}
+
 const suites = [
   scenarioLoadMoreReachesOlderPages,
   scenarioLoadAllReachesStart,
   scenarioNormalOpenDoesNotHydrate,
   scenarioHydrationFailureStillRenders,
   scenarioHydrationDedup,
+  scenarioHydrationDiscoversRealParamWhenGuessIsWrong,
   scenarioContractUnknown,
   scenarioProbeContract,
   scenarioLearnedContract,

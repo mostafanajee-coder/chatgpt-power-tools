@@ -29,7 +29,7 @@
         </div>
       </div>
       <div class="header-actions">
-        <span class="version-tag" id="headerVersion">v3.6.0</span>
+        <span class="version-tag" id="headerVersion">v3.11.0</span>
       </div>
     </header>
 
@@ -104,6 +104,19 @@
             <button class="step-btn" id="continuationDec" title="Fewer turns">−</button>
             <input type="number" id="continuationTurns" class="step-input" min="1" max="100" value="10" />
             <button class="step-btn" id="continuationInc" title="More turns">+</button>
+          </div>
+        </div>
+
+        <!-- Message Count Alert Threshold -->
+        <div class="limit-controller" id="messageCountDetails" style="margin-top: 8px;">
+          <div class="limit-labels">
+            <span class="limit-primary-label">Message Count Alert</span>
+            <span class="limit-secondary-label">Warn once the chat reaches this many messages</span>
+          </div>
+          <div class="stepper-widget">
+            <button class="step-btn" id="msgCountThresholdDec" title="Lower threshold">−</button>
+            <input type="number" id="messageCountThreshold" class="step-input" min="50" max="20000" step="10" value="120" />
+            <button class="step-btn" id="msgCountThresholdInc" title="Higher threshold">+</button>
           </div>
         </div>
 

@@ -11,6 +11,7 @@ const DEFAULT_SETTINGS = {
   messageLimit: 15,
   loadBatchSize: 5,
   continuationTurns: 10,
+  messageCountWarningThreshold: 120,
   enableAutoScrollLoad: true,
   enableFloatingButton: true,
   enableOutline: true,

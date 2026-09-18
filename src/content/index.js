@@ -17,6 +17,7 @@
     messageLimit: 15,
     loadBatchSize: 5,
     continuationTurns: 10,
+    messageCountWarningThreshold: 120,
     enableAutoScrollLoad: true,
     enableFloatingButton: true,
     enableOutline: true,
@@ -96,6 +97,21 @@
     return document.querySelectorAll('[data-message-author-role="user"]').length;
   }
 
+  // Every TurboGPT-owned node carries this attribute so the MutationObserver
+  // can tell our own DOM writes apart from ChatGPT's. Without it, each of our
+  // renders re-triggered the observer, which re-ran the renders: a permanent
+  // 350ms loop that never let the page go idle.
+  const OWNED_ATTR = "data-turbogpt";
+  const OWNED_SELECTOR = "[data-turbogpt]";
+  function markOwned(el) {
+    try { el.setAttribute(OWNED_ATTR, "1"); } catch {}
+    return el;
+  }
+
+  // Per-turn text statistics. Reading innerText forces a synchronous layout
+  // of the whole conversation, and it used to run on every observer tick.
+  // textContent needs no layout, and a turn's text only ever changes while
+  // it is being streamed - so everything but the newest turns is memoised.
   function computeContextUsage() {
     try {
       const turns = typeof getAllConversationTurns === "function" ? getAllConversationTurns() : Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], [data-testid^="conversation-turn"], article'));
@@ -111,15 +127,35 @@
         };
       }
 
-      const text = turns.map((t) => t.innerText || "").join(" ");
-      let totalChars = text.length;
-      let totalWords = text.trim() ? text.trim().split(/\s+/).length : 0;
+      const cache = computeContextUsage.turnCache || (computeContextUsage.turnCache = new WeakMap());
+      const LIVE_TAIL = 2;
+      let totalChars = 0;
+      let totalWords = 0;
+      let domUserTurns = 0;
+      for (let i = 0; i < turns.length; i++) {
+        const t = turns[i];
+        let stats = i < turns.length - LIVE_TAIL ? cache.get(t) : null;
+        if (!stats) {
+          const raw = t.textContent;
+          const text = typeof raw === "string" ? raw : (t.innerText || "");
+          const trimmed = text.trim();
+          stats = {
+            chars: text.length,
+            words: trimmed ? trimmed.split(/\s+/).length : 0,
+            isUser: !!(t.querySelector('[data-message-author-role="user"]') || t.getAttribute('data-message-author-role') === 'user')
+          };
+          try { cache.set(t, stats); } catch {}
+        }
+        totalChars += stats.chars;
+        totalWords += stats.words;
+        if (stats.isUser) domUserTurns++;
+      }
+      // Turns were joined with a single space before; keep the same maths.
+      totalChars += Math.max(0, turns.length - 1);
       let estimatedTokens = Math.round(totalChars / 3.2);
 
       // If background pagination has counted more user turns on the server than what is currently loaded in the DOM,
       // scale up the estimate so the user gets an accurate warning of total conversation context consumption.
-      const userTurns = turns.filter((t) => t.querySelector('[data-message-author-role="user"]') || t.getAttribute('data-message-author-role') === 'user');
-      const domUserTurns = userTurns.length;
       if (typeof lastStatus !== "undefined" && Number.isFinite(lastStatus.totalTurns) && lastStatus.totalTurns > domUserTurns && domUserTurns > 0) {
         const factor = lastStatus.totalTurns / domUserTurns;
         estimatedTokens = Math.round(estimatedTokens * factor);
@@ -153,6 +189,28 @@
     }
   }
 
+  // A plain message count against a user-set threshold - no language/model
+  // guessing involved, unlike computeContextUsage(). ChatGPT does not re-GET
+  // the conversation after every turn, so lastStatus.totalTurns alone would
+  // freeze at whatever it was on the last page load/navigation. Instead: live
+  // DOM turns (which DO grow as you keep chatting, no refresh needed) plus a
+  // fixed backlog of turns the server confirmed exist but were trimmed out of
+  // the DOM entirely before the last real conversation fetch.
+  function computeMessageCountStatus() {
+    const threshold = Math.max(1, Math.round(appSettings.messageCountWarningThreshold) || 120);
+    const domUserTurns = countDomUserTurns();
+    let count = domUserTurns;
+    if (Number.isFinite(lastStatus.totalTurns) && Number.isFinite(lastStatus.visibleTurns) &&
+        lastStatus.totalTurns > lastStatus.visibleTurns) {
+      count = domUserTurns + (lastStatus.totalTurns - lastStatus.visibleTurns);
+    }
+    const pct = Math.min(100, Math.round((count / threshold) * 100));
+    let status = "safe";
+    if (count >= threshold) status = "danger";
+    else if (pct >= 70) status = "warning";
+    return { count, threshold, pct, status };
+  }
+
   function timestampSlug() {
     const d = new Date();
     const p = (n) => String(n).padStart(2, "0");
@@ -174,12 +232,12 @@
     return name.replace(/[\\/:*?"<>|]/g, "_").slice(0, 80).trim() || "chatgpt-export";
   }
 
-  function toast(message) {
-    const t = document.createElement("div");
+  function toast(message, durationMs = 2400) {
+    const t = markOwned(document.createElement("div"));
     t.className = "turbogpt-toast";
     t.textContent = message;
     document.body.appendChild(t);
-    setTimeout(() => t.remove(), 2400);
+    setTimeout(() => t.remove(), durationMs);
   }
 
   // Load and sync settings
@@ -241,6 +299,7 @@
   } catch {}
 
   let hydrationNoticeShown = false;
+  let messageCountNoticeShown = false;
 
   function adoptStatus(payload, source) {
     if (!payload || typeof payload !== "object") return false;
@@ -252,6 +311,13 @@
     if (!hydrationNoticeShown && payload.hydratedPages > 0 && payload.hydrationFailureReason) {
       hydrationNoticeShown = true;
       toast(`Loaded ${payload.hydratedPages} older page(s) — could not load further (${payload.hydrationFailureReason})`);
+    }
+    if (!messageCountNoticeShown) {
+      const mc = computeMessageCountStatus();
+      if (mc.count >= mc.threshold) {
+        messageCountNoticeShown = true;
+        toast(`⚠️ ${mc.count} messages — you've reached your ${mc.threshold}-message alert threshold. Consider exporting this chat soon.`, 8000);
+      }
     }
     if (DEBUG_STATS) {
       try {
@@ -421,7 +487,7 @@
   // Inject CSS Styles
   function injectStyles() {
     if (document.getElementById("turbogpt-styles")) return;
-    const style = document.createElement("style");
+    const style = markOwned(document.createElement("style"));
     style.id = "turbogpt-styles";
     style.textContent = `
       .turbogpt-floating-pill {
@@ -543,6 +609,17 @@
       .turbogpt-dock-ctx-text.safe { color: #10b981; }
       .turbogpt-dock-ctx-text.warning { color: #f59e0b; }
       .turbogpt-dock-ctx-text.danger { color: #ef4444; }
+      .turbogpt-dock-msgcount {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      .turbogpt-dock-msgcount-text {
+        font-size: 10.5px;
+        font-weight: 800;
+        letter-spacing: -0.2px;
+      }
+      .turbogpt-dock-msgcount-text.safe { color: #10b981; }
+      .turbogpt-dock-msgcount-text.warning { color: #f59e0b; }
+      .turbogpt-dock-msgcount-text.danger { color: #ef4444; }
 
       /* Outline Drawer */
       .turbogpt-outline-drawer {
@@ -1372,12 +1449,18 @@
   }
 
   // Resilient element queries (Self-Healing Selectors)
-  function getChatScrollContainer() {
+  //
+  // The real container is looked up once and reused until React replaces it
+  // (isConnected turns false). It used to be re-resolved - four attribute
+  // substring selectors plus a getComputedStyle walk - on every wheel event.
+  let cachedScrollContainer = null;
+
+  function findChatScrollContainer() {
     const modernRoot = document.querySelector('[class*="group/scroll-root"]') ||
                        document.querySelector('.group\\/scroll-root') ||
                        document.querySelector('main [class*="react-scroll-to-bottom"]') ||
                        document.querySelector('div[class*="overflow-y-auto"]');
-    if (modernRoot) return modernRoot;
+    if (modernRoot) return { el: modernRoot, cacheable: true };
 
     const firstTurn = document.querySelector('[data-testid^="conversation-turn-"], [data-testid^="conversation-turn"], article');
     if (firstTurn) {
@@ -1386,16 +1469,61 @@
         try {
           const style = window.getComputedStyle(curr);
           if (style.overflowY === "auto" || style.overflowY === "scroll") {
-            return curr;
+            return { el: curr, cacheable: true };
           }
         } catch {}
         curr = curr.parentElement;
       }
     }
 
-    return document.querySelector('main [role="presentation"]') ||
-           document.querySelector('main') ||
-           document.documentElement;
+    // Generic fallbacks are always "connected", so they are never cached -
+    // the next call gets another chance to find the real container.
+    const fallback = document.querySelector('main [role="presentation"]') ||
+                     document.querySelector('main') ||
+                     document.documentElement;
+    return { el: fallback, cacheable: false };
+  }
+
+  function getChatScrollContainer() {
+    if (cachedScrollContainer && cachedScrollContainer.isConnected) return cachedScrollContainer;
+    cachedScrollContainer = null;
+    const found = findChatScrollContainer();
+    if (found.cacheable) cachedScrollContainer = found.el;
+    return found.el;
+  }
+
+  // Hidden-turn count, cached between DOM writes. It is read from gesture
+  // handlers (wheel/scroll/touch) and every render pass; a querySelectorAll
+  // over the whole document there was measurable on long chats.
+  let domHiddenCountCache = null;
+  function invalidateHiddenCount() { domHiddenCountCache = null; }
+  function getDomHiddenCount() {
+    if (domHiddenCountCache === null) {
+      domHiddenCountCache = document.querySelectorAll(".turbogpt-dom-hidden").length;
+    }
+    return domHiddenCountCache;
+  }
+
+  // Class/style writes only when the state actually changes: unconditional
+  // writes on every tick invalidated style for every turn, even idle ones.
+  function hideTurnEl(el) {
+    if (!el || el.classList.contains("turbogpt-dom-hidden")) return;
+    el.classList.add("turbogpt-dom-hidden");
+    el.style.setProperty("display", "none", "important");
+    invalidateHiddenCount();
+  }
+  function showTurnEl(el) {
+    if (!el) return;
+    let changed = false;
+    if (el.classList.contains("turbogpt-dom-hidden")) {
+      el.classList.remove("turbogpt-dom-hidden");
+      changed = true;
+    }
+    if (el.style.display === "none") {
+      el.style.removeProperty("display");
+      changed = true;
+    }
+    if (changed) invalidateHiddenCount();
   }
 
   function getAllConversationTurns() {
@@ -1440,16 +1568,11 @@
     }
 
     if (!appSettings.enabled) {
-      document.querySelectorAll(".turbogpt-dom-hidden").forEach((el) => {
-        el.classList.remove("turbogpt-dom-hidden");
-        el.style.removeProperty("display");
-      });
-      const root = document.querySelector(".qMYqUG_convSearchResultHighlightRoot");
-      if (root) {
-        Array.from(root.children).forEach((c) => {
-          c.classList.remove("turbogpt-dom-hidden");
-          c.style.removeProperty("display");
-        });
+      if (getDomHiddenCount() > 0) {
+        document.querySelectorAll(".turbogpt-dom-hidden").forEach(showTurnEl);
+        const root = document.querySelector(".qMYqUG_convSearchResultHighlightRoot");
+        if (root) Array.from(root.children).forEach(showTurnEl);
+        invalidateHiddenCount();
       }
       updateOutlineBadge();
       return;
@@ -1488,19 +1611,11 @@
       turns.forEach((turn, idx) => {
         const container = getTurnItemContainer(turn);
         if (idx < cutoffIdx) {
-          turn.classList.add("turbogpt-dom-hidden");
-          turn.style.setProperty("display", "none", "important");
-          if (container !== turn) {
-            container.classList.add("turbogpt-dom-hidden");
-            container.style.setProperty("display", "none", "important");
-          }
+          hideTurnEl(turn);
+          if (container !== turn) hideTurnEl(container);
         } else {
-          turn.classList.remove("turbogpt-dom-hidden");
-          turn.style.removeProperty("display");
-          if (container !== turn) {
-            container.classList.remove("turbogpt-dom-hidden");
-            container.style.removeProperty("display");
-          }
+          showTurnEl(turn);
+          if (container !== turn) showTurnEl(container);
         }
       });
 
@@ -1519,31 +1634,22 @@
                              c.className.includes("min-h-") ||
                              c.getAttribute("data-turn-id-container") === "client-created-root";
             if (i < firstVisibleIdx && !isSpacer && !c.querySelector('[data-testid^="conversation-turn"]:not(.turbogpt-dom-hidden)')) {
-              c.classList.add("turbogpt-dom-hidden");
-              c.style.setProperty("display", "none", "important");
+              hideTurnEl(c);
             }
           });
         }
       }
-    } else {
+    } else if (getDomHiddenCount() > 0) {
       turns.forEach((turn) => {
         const container = getTurnItemContainer(turn);
-        turn.classList.remove("turbogpt-dom-hidden");
-        turn.style.removeProperty("display");
-        if (container !== turn) {
-          container.classList.remove("turbogpt-dom-hidden");
-          container.style.removeProperty("display");
-        }
+        showTurnEl(turn);
+        if (container !== turn) showTurnEl(container);
       });
       const root = document.querySelector(".qMYqUG_convSearchResultHighlightRoot");
-      if (root) {
-        Array.from(root.children).forEach((c) => {
-          c.classList.remove("turbogpt-dom-hidden");
-          c.style.removeProperty("display");
-        });
-      }
+      if (root) Array.from(root.children).forEach(showTurnEl);
     }
     initialEnforcementDone = true;
+    invalidateHiddenCount();
     updateOutlineBadge();
   }
 
@@ -1551,7 +1657,7 @@
   let lastPillSignature = null;
 
   function hasOlderTurnsToLoad() {
-    const domHiddenTurns = document.querySelectorAll(".turbogpt-dom-hidden").length;
+    const domHiddenTurns = getDomHiddenCount();
     if (domHiddenTurns > 0) return true;
 
     if (Number.isFinite(lastStatus.totalTurns) && Number.isFinite(lastStatus.visibleTurns)) {
@@ -1578,7 +1684,7 @@
   function renderFloatingLoadButton(force = false) {
     const existingPill = document.getElementById("turbogpt-floating-pill");
 
-    const domHiddenTurns = document.querySelectorAll(".turbogpt-dom-hidden").length;
+    const domHiddenTurns = getDomHiddenCount();
 
     // When Auto-Load on Scroll is active:
     // As long as turns are hidden in DOM, keep pill hidden so scroll-up handles it seamlessly.
@@ -1635,7 +1741,7 @@
     const chatContainer = getChatScrollContainer();
     if (!chatContainer) return;
 
-    const pill = document.createElement("div");
+    const pill = markOwned(document.createElement("div"));
     pill.id = "turbogpt-floating-pill";
     pill.className = "turbogpt-floating-pill";
     pill.dataset.sig = signature;
@@ -1699,7 +1805,7 @@
   function showScrollLoader() {
     let loader = document.getElementById("turbogpt-scroll-loader");
     if (!loader) {
-      loader = document.createElement("div");
+      loader = markOwned(document.createElement("div"));
       loader.id = "turbogpt-scroll-loader";
       loader.className = "turbogpt-scroll-loader";
       loader.innerHTML = `
@@ -1735,9 +1841,8 @@
   function unhideOlderBatch(options = {}) {
     if (isAutoLoadingBatch) return false;
     const batchSize = Math.max(1, appSettings.loadBatchSize || 5);
-    const hiddenEls = Array.from(document.querySelectorAll(".turbogpt-dom-hidden"));
 
-    if (hiddenEls.length > 0) {
+    if (getDomHiddenCount() > 0) {
       isAutoLoadingBatch = true;
       if (options.fromScroll) {
         showScrollLoader();
@@ -1846,7 +1951,7 @@
         const targetContainer = getTurnItemContainer(firstVisible) || firstVisible;
         let sentinel = document.getElementById("turbogpt-scroll-sentinel");
         if (!sentinel) {
-          sentinel = document.createElement("div");
+          sentinel = markOwned(document.createElement("div"));
           sentinel.id = "turbogpt-scroll-sentinel";
           sentinel.className = "turbogpt-scroll-sentinel";
           sentinel.setAttribute("aria-hidden", "true");
@@ -1858,7 +1963,7 @@
           if (scrollIntersectionObserver) scrollIntersectionObserver.disconnect();
           scrollIntersectionObserver = new IntersectionObserver((entries) => {
             for (const entry of entries) {
-              const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
+              const domHidden = getDomHiddenCount();
               const currentST = chatContainer ? chatContainer.scrollTop : getEffectiveScrollTop();
               const distanceFromBottom = chatContainer ? (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) : 0;
               if (entry.isIntersecting && !isAutoLoadingBatch && domHidden > 0 && currentST <= 150 && distanceFromBottom > 100) {
@@ -1877,19 +1982,14 @@
     }
 
     // 1. Wheel listener: catches upward mouse wheel / trackpad scroll even when scrollTop is 0 (e.g. Visible Messages = 1)
+    // Registered once, on window only (the duplicate document listener ran
+    // every handler twice), and the actual check is coalesced to one per
+    // animation frame - wheel events arrive far faster than frames.
     if (!wheelListenerCallback) {
       wheelListenerCallback = (e) => {
-        if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
-        if (e.deltaY < 0) {
-          const st = getEffectiveScrollTop();
-          const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
-          if (st <= 150 && domHidden > 0) {
-            unhideOlderBatch({ fromScroll: true });
-          }
-        }
+        if (e.deltaY < 0) scheduleGestureCheck();
       };
       window.addEventListener("wheel", wheelListenerCallback, { capture: true, passive: true });
-      document.addEventListener("wheel", wheelListenerCallback, { capture: true, passive: true });
     }
 
     // 2. Touch listeners: catches mobile/tablet swipe down
@@ -1898,15 +1998,8 @@
         touchStartY = e.touches[0]?.clientY || 0;
       };
       touchMoveCallback = (e) => {
-        if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
         const currentY = e.touches[0]?.clientY || 0;
-        if (currentY - touchStartY > 35) {
-          const st = getEffectiveScrollTop();
-          const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
-          if (st <= 150 && domHidden > 0) {
-            unhideOlderBatch({ fromScroll: true });
-          }
-        }
+        if (currentY - touchStartY > 35) scheduleGestureCheck();
       };
       window.addEventListener("touchstart", touchStartCallback, { capture: true, passive: true });
       window.addEventListener("touchmove", touchMoveCallback, { capture: true, passive: true });
@@ -1915,14 +2008,7 @@
     // 3. Keyboard listener: catches PageUp or Ctrl+ArrowUp at the top
     if (!keyListenerCallback) {
       keyListenerCallback = (e) => {
-        if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
-        if (e.key === "PageUp" || (e.key === "ArrowUp" && (e.ctrlKey || e.metaKey))) {
-          const st = getEffectiveScrollTop();
-          const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
-          if (st <= 150 && domHidden > 0) {
-            unhideOlderBatch({ fromScroll: true });
-          }
-        }
+        if (e.key === "PageUp" || (e.key === "ArrowUp" && (e.ctrlKey || e.metaKey))) scheduleGestureCheck();
       };
       window.addEventListener("keydown", keyListenerCallback, { passive: true });
     }
@@ -1939,7 +2025,7 @@
         const isUp = currentST < lastScrollTopPos;
         lastScrollTopPos = currentST;
         if (isUp && currentST <= 150 && !isAutoLoadingBatch) {
-          const domHidden = document.querySelectorAll(".turbogpt-dom-hidden").length;
+          const domHidden = getDomHiddenCount();
           if (domHidden > 0) {
             unhideOlderBatch({ fromScroll: true });
           }
@@ -1947,6 +2033,25 @@
       };
       chatContainer.addEventListener("scroll", scrollListenerCallback, { passive: true });
     }
+  }
+
+  // One gesture check per frame, whatever the input rate.
+  let gestureCheckScheduled = false;
+  function scheduleGestureCheck() {
+    if (gestureCheckScheduled) return;
+    if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
+    gestureCheckScheduled = true;
+    const run = () => {
+      gestureCheckScheduled = false;
+      if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
+      const st = getEffectiveScrollTop();
+      const domHidden = getDomHiddenCount();
+      if (st <= 150 && domHidden > 0) {
+        unhideOlderBatch({ fromScroll: true });
+      }
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 16);
   }
 
   function removeAutoScrollLoader() {
@@ -1961,7 +2066,6 @@
     }
     if (wheelListenerCallback) {
       window.removeEventListener("wheel", wheelListenerCallback, { capture: true });
-      document.removeEventListener("wheel", wheelListenerCallback, { capture: true });
       wheelListenerCallback = null;
     }
     if (touchStartCallback) {
@@ -2008,6 +2112,7 @@
 
   function buildTopbarExportButton() {
     const btn = document.createElement("button");
+    try { btn.setAttribute("data-turbogpt", "1"); } catch {}
     btn.id = TOPBAR_EXPORT_ID;
     btn.className = "turbogpt-topbar-export";
     btn.type = "button";
@@ -2038,13 +2143,22 @@
     }
 
     const existing = document.getElementById(TOPBAR_EXPORT_ID);
-    const share = findShareButton();
 
     if (existing) {
-      // Already placed correctly - React re-renders must not duplicate it.
+      // Already placed - re-verify its position at most every couple of
+      // seconds. Looking the Share button up (several attribute-substring
+      // selectors, then a text scan of every button) on every tick was
+      // pure waste while nothing had moved.
+      const now = Date.now();
+      if (existing.parentNode && now - (injectTopbarExportButton.lastCheck || 0) < 2000) return;
+      injectTopbarExportButton.lastCheck = now;
+      const share = findShareButton();
+      // React re-renders must not duplicate it.
       if (!share || existing.parentNode === share.parentNode) return;
       existing.remove();
     }
+
+    const share = findShareButton();
 
     // Nothing to export yet (empty/new chat) - stay out of the way.
     if (!document.querySelector('[data-message-author-role="user"]')) return;
@@ -2129,12 +2243,14 @@
     const userCount = visibleUser.length < allUser.length ? `${visibleUser.length}` : `${allUser.length}`;
     const ctxUsage = computeContextUsage();
     const ctxSignature = ctxUsage ? `${ctxUsage.contextUsedPct}|${ctxUsage.contextStatus}` : "none";
-    const signature = `${appSettings.enableSearch}|${appSettings.enableOutline}|${visibleUser.length}|${allUser.length}|${ctxSignature}`;
+    const msgCount = computeMessageCountStatus();
+    const msgCountSignature = `${msgCount.count}|${msgCount.status}`;
+    const signature = `${appSettings.enableSearch}|${appSettings.enableOutline}|${visibleUser.length}|${allUser.length}|${ctxSignature}|${msgCountSignature}`;
 
     if (dock && dock.dataset.sig === signature) return;
 
     if (!dock) {
-      dock = document.createElement("div");
+      dock = markOwned(document.createElement("div"));
       dock.id = "turbogpt-floating-dock";
       dock.className = "turbogpt-floating-dock";
       document.body.appendChild(dock);
@@ -2146,6 +2262,11 @@
       ${ctxUsage && ctxUsage.totalChars > 0 ? `
         <button class="turbogpt-dock-btn turbogpt-dock-context" id="turbogpt-dock-context" title="Context Used: ${ctxUsage.contextUsedPct}% (${ctxUsage.contextRemainingPct}% remaining, ~${ctxUsage.contextRemainingTokens.toLocaleString()} tokens left)">
           <span class="turbogpt-dock-ctx-text ${ctxUsage.contextStatus}">${ctxUsage.contextUsedPct}%</span>
+        </button>
+      ` : ""}
+      ${msgCount.count > 0 ? `
+        <button class="turbogpt-dock-btn turbogpt-dock-msgcount" id="turbogpt-dock-msgcount" title="${msgCount.count} of your ${msgCount.threshold}-message alert threshold">
+          <span class="turbogpt-dock-msgcount-text ${msgCount.status}">${msgCount.count}</span>
         </button>
       ` : ""}
       ${appSettings.enableSearch !== false ? `
@@ -2181,6 +2302,14 @@
       });
     }
 
+    const msgCountBtn = dock.querySelector("#turbogpt-dock-msgcount");
+    if (msgCountBtn) {
+      msgCountBtn.addEventListener("click", () => {
+        const m = computeMessageCountStatus();
+        toast(`${m.count} of your ${m.threshold}-message alert threshold (${m.pct}%)`);
+      });
+    }
+
     const searchBtn = dock.querySelector("#turbogpt-dock-search");
     if (searchBtn) searchBtn.addEventListener("click", toggleSearchOverlay);
 
@@ -2212,24 +2341,28 @@
         }
       }
     }
+
+    const msgCountBtn = document.getElementById("turbogpt-dock-msgcount");
+    if (msgCountBtn) {
+      const m = computeMessageCountStatus();
+      msgCountBtn.title = `${m.count} of your ${m.threshold}-message alert threshold`;
+      const txtEl = msgCountBtn.querySelector(".turbogpt-dock-msgcount-text");
+      if (txtEl) {
+        txtEl.textContent = `${m.count}`;
+        txtEl.className = `turbogpt-dock-msgcount-text ${m.status}`;
+      }
+    }
   }
 
   function highlightTurn(el) {
     let curr = el;
     while (curr && curr !== document.body) {
-      if (curr.classList.contains("turbogpt-dom-hidden")) {
-        curr.classList.remove("turbogpt-dom-hidden");
-        curr.style.removeProperty("display");
-      }
+      showTurnEl(curr);
       curr = curr.parentElement;
     }
     const parentTurn = el.closest('[data-testid^="conversation-turn-"]') || el;
-    parentTurn.classList.remove("turbogpt-dom-hidden");
-    parentTurn.style.removeProperty("display");
-    if (parentTurn.parentElement) {
-      parentTurn.parentElement.classList.remove("turbogpt-dom-hidden");
-      parentTurn.parentElement.style.removeProperty("display");
-    }
+    showTurnEl(parentTurn);
+    if (parentTurn.parentElement) showTurnEl(parentTurn.parentElement);
 
     el.scrollIntoView({ behavior: "smooth", block: "center" });
     parentTurn.classList.add("turbogpt-highlight-turn");
@@ -2243,7 +2376,7 @@
     if (existing) existing.remove();
     if (!outlineOpen) return;
 
-    const drawer = document.createElement("div");
+    const drawer = markOwned(document.createElement("div"));
     drawer.id = "turbogpt-outline-drawer";
     drawer.className = "turbogpt-outline-drawer";
 
@@ -2377,9 +2510,9 @@
             if (e.target.classList.contains("turbogpt-del-bm")) return;
             const targetEl = bm.id ? document.querySelector(`[data-message-id="${safeEscape(bm.id)}"]`) : null;
             if (targetEl) {
-              targetEl.classList.remove("turbogpt-dom-hidden");
+              showTurnEl(targetEl);
               const p = targetEl.closest(".turbogpt-dom-hidden");
-              if (p) p.classList.remove("turbogpt-dom-hidden");
+              if (p) showTurnEl(p);
               highlightTurn(targetEl);
             } else {
               toast("This reply isn't loaded — use ↑ Load More first.");
@@ -2452,9 +2585,9 @@
             if (bm.convId === getConversationId()) {
               const targetEl = bm.id ? document.querySelector(`[data-message-id="${safeEscape(bm.id)}"]`) : null;
               if (targetEl) {
-                targetEl.classList.remove("turbogpt-dom-hidden");
+                showTurnEl(targetEl);
                 const p = targetEl.closest(".turbogpt-dom-hidden");
-                if (p) p.classList.remove("turbogpt-dom-hidden");
+                if (p) showTurnEl(p);
                 highlightTurn(targetEl);
               } else {
                 toast("This reply isn't loaded — use ↑ Load More first.");
@@ -2502,7 +2635,7 @@
       const msgId = astTurn.getAttribute("data-message-id") || Math.random().toString(36).slice(2);
       const isBookmarked = bookmarks.some(b => b.id === msgId);
 
-      const btn = document.createElement("button");
+      const btn = markOwned(document.createElement("button"));
       btn.className = `turbogpt-bookmark-btn ${isBookmarked ? 'active' : ''}`;
       btn.title = isBookmarked ? "Pinned" : "Pin this response (⭐️)";
       btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="${isBookmarked ? '#eab308' : 'none'}" stroke="${isBookmarked ? '#eab308' : 'currentColor'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
@@ -2548,7 +2681,7 @@
     if (existingPreview) existingPreview.remove();
     if (!searchActive) return;
 
-    const overlay = document.createElement("div");
+    const overlay = markOwned(document.createElement("div"));
     overlay.id = "turbogpt-search-overlay";
     overlay.className = "turbogpt-search-overlay";
     overlay.innerHTML = `
@@ -2706,9 +2839,7 @@
 
       const match = searchMatches[currentMatchIdx];
       if (match.type === "dom") {
-        if (match.el.classList.contains("turbogpt-dom-hidden")) {
-          match.el.classList.remove("turbogpt-dom-hidden");
-        }
+        showTurnEl(match.el);
         match.el.scrollIntoView({ behavior: "smooth", block: "center" });
         match.el.classList.add("turbogpt-highlight-turn");
         setTimeout(() => match.el.classList.remove("turbogpt-highlight-turn"), 2200);
@@ -2726,9 +2857,7 @@
       }
 
       if (matchedTurnEl) {
-        if (matchedTurnEl.classList.contains("turbogpt-dom-hidden")) {
-          matchedTurnEl.classList.remove("turbogpt-dom-hidden");
-        }
+        showTurnEl(matchedTurnEl);
         matchedTurnEl.scrollIntoView({ behavior: "smooth", block: "center" });
         matchedTurnEl.classList.add("turbogpt-highlight-turn");
         setTimeout(() => matchedTurnEl.classList.remove("turbogpt-highlight-turn"), 2200);
@@ -2742,7 +2871,7 @@
       const existing = document.getElementById("turbogpt-preview-card");
       if (existing) existing.remove();
 
-      const card = document.createElement("div");
+      const card = markOwned(document.createElement("div"));
       card.id = "turbogpt-preview-card";
       card.className = "turbogpt-preview-card";
       card.innerHTML = `
@@ -2834,6 +2963,13 @@
     return map;
   }
 
+  // Which folders are expanded. Kept outside the render so a rebuild (which
+  // re-reads localStorage) does not collapse them - previously the open flag
+  // lived on the folder object and was lost on every re-read, so a folder
+  // could never actually be opened.
+  const openFolderIds = new Set();
+  let lastFoldersSignature = null;
+
   function renderSidebarFolders() {
     if (!appSettings.enabled || appSettings.enableFolders === false) return;
 
@@ -2844,8 +2980,16 @@
 
     let container = document.getElementById("turbogpt-sidebar-folders");
 
+    // Rebuild only when something that affects the list changed. This used to
+    // wipe and rebuild the whole folder DOM on every observer tick, and each
+    // rebuild re-triggered the observer - a self-sustaining loop.
+    const rawFolders = (() => { try { return localStorage.getItem(FOLDERS_KEY) || ""; } catch { return ""; } })();
+    const signature = `${rawFolders}|${getConversationId() || ""}|${Array.from(openFolderIds).join(",")}`;
+    if (container && container.isConnected !== false && signature === lastFoldersSignature) return;
+    lastFoldersSignature = signature;
+
     if (!container) {
-      container = document.createElement("div");
+      container = markOwned(document.createElement("div"));
       container.id = "turbogpt-sidebar-folders";
       container.className = "turbogpt-sidebar-folders";
       container.innerHTML = `
@@ -2882,6 +3026,10 @@
 
     function updateList() {
       folders = loadFolders();
+      folders.forEach((f) => { f._open = openFolderIds.has(f.id); });
+      try {
+        lastFoldersSignature = `${localStorage.getItem(FOLDERS_KEY) || ""}|${getConversationId() || ""}|${Array.from(openFolderIds).join(",")}`;
+      } catch {}
       const list = container.querySelector("#turbogpt-folders-list");
       list.innerHTML = "";
       const titles = scrapeSidebarTitles();
@@ -2969,7 +3117,8 @@
         });
 
         row.addEventListener("click", () => {
-          folder._open = !folder._open;
+          if (openFolderIds.has(folder.id)) openFolderIds.delete(folder.id);
+          else openFolderIds.add(folder.id);
           updateList();
         });
 
@@ -3175,7 +3324,7 @@
 
   let fullExportWaiters = [];
 
-  function requestFullConversation(timeoutMs = 190000) {
+  function requestFullConversation(timeoutMs = 610000) {
     return new Promise((resolve) => {
       const waiter = { resolve, done: false };
       fullExportWaiters.push(waiter);
@@ -3371,7 +3520,7 @@
 
     const { title, messages } = extractConversationContent();
 
-    const modal = document.createElement("div");
+    const modal = markOwned(document.createElement("div"));
     modal.id = "turbogpt-export-modal";
     modal.className = "turbogpt-modal-overlay";
 
@@ -3633,6 +3782,9 @@
 
   function resetRenderCaches() {
     lastPillSignature = null;
+    lastFoldersSignature = null;
+    cachedScrollContainer = null;
+    invalidateHiddenCount();
     const dock = document.getElementById("turbogpt-floating-dock");
     if (dock) delete dock.dataset.sig;
   }
@@ -3661,6 +3813,8 @@
     initialEnforcementDone = false;
     cachedFullConvMessages = null;
     cachedFullConvId = null;
+    cachedScrollContainer = null;
+    invalidateHiddenCount();
     removeAutoScrollLoader();
     // A new temporary chat gets a fresh session identity.
     if (isTemporaryChat() && !href.includes("/c/")) temporarySessionId = null;
@@ -3668,6 +3822,7 @@
     if (scopeId === lastScopeId) return;
     lastScopeId = scopeId;
     statusReceived = false;
+    messageCountNoticeShown = false;
     lastStatus = {
       totalMessages: 0,
       renderedMessages: 0,
@@ -3685,10 +3840,50 @@
   }
 
   // DOM Observer (replaces fixed-interval polling)
+  //
+  // The callback itself must stay trivially cheap: during streaming ChatGPT
+  // emits mutation batches many times a second. All real work happens in one
+  // debounced tick, and mutations caused by our own UI are ignored entirely
+  // so the page can actually go idle between user actions.
   let wasStreaming = false;
   let moTimer = null;
-  const observer = new MutationObserver(() => {
-    const isStreaming = !!document.querySelector('.result-streaming, [data-testid="stop-button"], button[aria-label*="Stop"]');
+  let tickPendingWhileHidden = false;
+
+  function isOwnMutation(rec) {
+    const t = rec.target;
+    if (t && t.nodeType === 1 && typeof t.closest === "function" && t.closest(OWNED_SELECTOR)) return true;
+    const added = rec.addedNodes;
+    const removed = rec.removedNodes;
+    if (added.length === 0 && removed.length === 0) return false;
+    for (let i = 0; i < added.length; i++) {
+      const n = added[i];
+      if (!(n.nodeType === 1 && n.hasAttribute && n.hasAttribute(OWNED_ATTR))) return false;
+    }
+    for (let i = 0; i < removed.length; i++) {
+      const n = removed[i];
+      if (!(n.nodeType === 1 && n.hasAttribute && n.hasAttribute(OWNED_ATTR))) return false;
+    }
+    return true;
+  }
+
+  function isStreamingNow() {
+    return !!document.querySelector('.result-streaming, [data-testid="stop-button"], button[aria-label*="Stop"]');
+  }
+
+  function runObserverTick() {
+    moTimer = null;
+    if (document.hidden) {
+      // Nothing to paint for a background tab. Navigation state is still
+      // tracked; the full pass runs once the tab is visible again.
+      checkNavigation();
+      tickPendingWhileHidden = true;
+      return;
+    }
+    tickPendingWhileHidden = false;
+    invalidateHiddenCount();
+    checkNavigation();
+
+    const isStreaming = isStreamingNow();
     if (wasStreaming && !isStreaming) {
       if (appSettings.enabled && appSettings.liveAutoTrim) {
         enforceDomTurnLimit({ live: true });
@@ -3696,22 +3891,33 @@
     }
     wasStreaming = isStreaming;
 
+    if (appSettings.enabled) {
+      enforceDomTurnLimit({ live: true });
+      renderFloatingLoadButton();
+      injectBookmarkButtons();
+      renderSidebarFolders();
+      setupAutoScrollLoader();
+    }
+    // Runs regardless of `enabled` so it can also remove itself when the
+    // booster is switched off. Cheap: exits early once already placed.
+    injectTopbarExportButton();
+    renderFloatingDock();
+  }
+
+  const observer = new MutationObserver((records) => {
     if (moTimer) return;
-    moTimer = setTimeout(() => {
-      moTimer = null;
-      checkNavigation();
-      if (appSettings.enabled) {
-        enforceDomTurnLimit({ live: true });
-        renderFloatingLoadButton();
-        injectBookmarkButtons();
-        renderSidebarFolders();
-        setupAutoScrollLoader();
-      }
-      // Runs regardless of `enabled` so it can also remove itself when the
-      // booster is switched off. Cheap: exits early once already placed.
-      injectTopbarExportButton();
-      renderFloatingDock();
-    }, 350);
+    let relevant = false;
+    for (let i = 0; i < records.length; i++) {
+      if (!isOwnMutation(records[i])) { relevant = true; break; }
+    }
+    if (!relevant) return;
+    moTimer = setTimeout(runObserverTick, 350);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && tickPendingWhileHidden && !moTimer) {
+      moTimer = setTimeout(runObserverTick, 50);
+    }
   });
 
   // Prompt submission listeners: trigger turn enforcement immediately when user sends a message

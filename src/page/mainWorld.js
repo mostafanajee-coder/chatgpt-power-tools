@@ -38,12 +38,23 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  // window.fetch is wrapped below, and ChatGPT calls fetch constantly
+  // (telemetry, presence, typing state...). Re-reading and re-parsing the
+  // config from localStorage on each of those calls was pointless work on
+  // the main thread, so the parsed config is reused for a short window.
+  const CONFIG_CACHE_TTL_MS = 1000;
+  let cachedConfig = null;
+  let cachedConfigAt = 0;
+
   function getActiveConfig() {
+    const now = Date.now();
+    if (cachedConfig && now - cachedConfigAt < CONFIG_CACHE_TTL_MS) return cachedConfig;
+    let config = DEFAULT_CONFIG;
     try {
       const raw = localStorage.getItem(STORAGE_CONFIG_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        return {
+        config = {
           enabled: parsed.enabled ?? DEFAULT_CONFIG.enabled,
           messageLimit: Math.max(1, parsed.messageLimit ?? DEFAULT_CONFIG.messageLimit),
           enableAutoScrollLoad: parsed.enableAutoScrollLoad === true,
@@ -51,7 +62,9 @@
         };
       }
     } catch {}
-    return DEFAULT_CONFIG;
+    cachedConfig = config;
+    cachedConfigAt = now;
+    return config;
   }
 
   function getExtraTurns() {
@@ -726,14 +739,91 @@
 
   const HYDRATE_TIME_BUDGET_MS = 20000;
   // Full export is an explicit archive action with progress feedback, so it
-  // gets a much larger budget than an interactive "Load more" reload.
-  const FULL_EXPORT_TIME_BUDGET_MS = 180000;
+  // gets a much larger budget than an interactive "Load more" reload. A chat
+  // that is genuinely at ChatGPT's real length limit can need many pages
+  // even with the correct pagination contract already known - 3 minutes was
+  // observed cutting off a real 296+ message walk mid-way.
+  const FULL_EXPORT_TIME_BUDGET_MS = 600000;
 
   function countUserTurns(messages) {
     if (!Array.isArray(messages)) return 0;
     let n = 0;
     for (const m of messages) if (m?.author?.role === "user") n++;
     return n;
+  }
+
+  // Some accounts/conversations never trigger ChatGPT's own "load older
+  // messages" request while the speed booster is on (it deliberately tells
+  // React has_previous_page:false to stop native infinite scroll - see the
+  // fetch interceptor above). That means resolveBackwardPagination's default
+  // parameter-name guess is sometimes just wrong, and the walk fails after
+  // page 1 with "no-progress" even though the server has plenty more.
+  //
+  // Instead of trusting the guess, try every plausible parameter name once
+  // (cheap: a handful of GETs, first hop only) and keep whichever one
+  // actually returns records we do not already have. The winner is cached
+  // via observePaginationRequest's own storage key so every later page in
+  // this walk, and every future export, skips straight to the right name.
+  async function discoverPaginationContract({ baseUrl, requestInit, pageInfo, oldestRecordId, seenRecordIds }) {
+    const fromPageInfo = pickBackwardCursor(pageInfo);
+    const cursorValue = fromPageInfo?.value || oldestRecordId;
+    if (!cursorValue) return { error: "pagination-contract-unknown" };
+
+    // A real server/network error is far more useful to surface than a flat
+    // "unknown contract" once every candidate has been tried, so the last one
+    // seen wins unless a later candidate actually succeeds.
+    let lastError = null;
+
+    for (const name of PAGINATION_PARAM_CANDIDATES) {
+      let candidateUrl;
+      try {
+        const u = new URL(baseUrl, window.location.origin);
+        u.searchParams.set(name, cursorValue);
+        candidateUrl = u.toString();
+      } catch {
+        continue;
+      }
+
+      let res;
+      try {
+        // Single attempt per candidate, straight through originalFetch: this
+        // is a cheap probe for the real parameter name, not a resilient
+        // fetch - retrying every wrong guess would multiply the cost by the
+        // whole candidate list for nothing.
+        res = await originalFetch.call(window, candidateUrl, requestInit);
+      } catch {
+        lastError = "network";
+        continue;
+      }
+      if (!res.ok) {
+        lastError = `http-${res.status}`;
+        continue;
+      }
+
+      let pageData;
+      try {
+        let text = await res.text();
+        if (text.charCodeAt(0) === 65279) text = text.slice(1);
+        pageData = JSON.parse(text);
+      } catch {
+        lastError = "parse";
+        continue;
+      }
+      if (!pageData || !Array.isArray(pageData.messages)) {
+        lastError = "schema";
+        continue;
+      }
+
+      const fresh = pageData.messages.filter((m) => m?.id == null || !seenRecordIds.has(String(m.id)));
+      if (fresh.length > 0) {
+        const record = { parameterName: name, extraParams: {}, learnedAt: Date.now() };
+        observedPagination = { ...record, lastCursorValue: cursorValue };
+        try { localStorage.setItem(STORAGE_PAGINATION_KEY, JSON.stringify(record)); } catch {}
+        logCount("contract-discovered", { parameterName: name });
+        return { parameterName: name, pageData };
+      }
+    }
+    return { error: lastError || "pagination-contract-unknown" };
   }
 
   async function hydrateOlderMessages({
@@ -756,26 +846,35 @@
         if (pagesFetched >= COUNT_MAX_PAGES) { failureReason = "max-pages"; break; }
         if (Date.now() > deadline) { failureReason = "time-budget"; break; }
 
-        const plan = resolveBackwardPagination({
-          requestUrl: baseUrl,
-          pageInfo: currentPageInfo,
-          oldestRecordId,
-          allowProbe: pagesFetched === 0
-        });
-        if (!plan.supported) { failureReason = plan.reason || "pagination-contract-unknown"; break; }
-        if (seenCursors.has(plan.cursorValue)) { failureReason = "duplicate-cursor"; break; }
-        seenCursors.add(plan.cursorValue);
-
-        const attempt = await fetchPageWithRetry(plan.nextUrl, requestInit, () => true);
-        if (attempt.error) { failureReason = attempt.error; break; }
-
         let pageData;
-        try {
-          let text = await attempt.res.text();
-          if (text.charCodeAt(0) === 65279) text = text.slice(1);
-          pageData = JSON.parse(text);
-        } catch {
-          failureReason = "parse"; break;
+
+        if (pagesFetched === 0 && !loadObservedPagination()) {
+          const discovery = await discoverPaginationContract({
+            baseUrl, requestInit, pageInfo: currentPageInfo, oldestRecordId, seenRecordIds
+          });
+          if (discovery.error) { failureReason = discovery.error; break; }
+          pageData = discovery.pageData;
+        } else {
+          const plan = resolveBackwardPagination({
+            requestUrl: baseUrl,
+            pageInfo: currentPageInfo,
+            oldestRecordId,
+            allowProbe: pagesFetched === 0
+          });
+          if (!plan.supported) { failureReason = plan.reason || "pagination-contract-unknown"; break; }
+          if (seenCursors.has(plan.cursorValue)) { failureReason = "duplicate-cursor"; break; }
+          seenCursors.add(plan.cursorValue);
+
+          const attempt = await fetchPageWithRetry(plan.nextUrl, requestInit, () => true);
+          if (attempt.error) { failureReason = attempt.error; break; }
+
+          try {
+            let text = await attempt.res.text();
+            if (text.charCodeAt(0) === 65279) text = text.slice(1);
+            pageData = JSON.parse(text);
+          } catch {
+            failureReason = "parse"; break;
+          }
         }
         if (!pageData || !Array.isArray(pageData.messages)) { failureReason = "schema"; break; }
         if (pageData.messages.length === 0) {
@@ -868,11 +967,31 @@
       seen.add(curr);
       const node = mapping[curr];
       if (node.message) {
-        messages.unshift(node.message);
+        // push + reverse, not unshift: unshift in a loop is quadratic and
+        // this chain is walked for every conversation open.
+        messages.push(node.message);
       }
       curr = node.parent;
     }
+    messages.reverse();
     return messages;
+  }
+
+  // The interceptor replaces the body, so the original transfer headers no
+  // longer describe it. Spreading `undefined` into a Headers init used to
+  // turn them into the literal string "undefined" instead of removing them.
+  function buildJsonResponse(original, data) {
+    const headers = new Headers(original.headers);
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+    headers.set("content-type", "application/json; charset=utf-8");
+    const modified = new Response(JSON.stringify(data), {
+      status: original.status,
+      statusText: original.statusText,
+      headers
+    });
+    try { Object.defineProperty(modified, "url", { value: original.url }); } catch {}
+    return modified;
   }
 
   async function collectFullConversation() {
@@ -1027,11 +1146,15 @@
           keptMessages = trimConversationMessages(allMessages, payloadTurnLimit);
           const firstKeptId = keptMessages[0]?.id;
           if (firstKeptId) {
-            let targetNodeId = null;
-            for (const [nid, node] of Object.entries(data.mapping)) {
-              if (node.message?.id === firstKeptId || nid === firstKeptId) {
-                targetNodeId = nid;
-                break;
+            // Node ids equal message ids in this format; try the direct key
+            // first and only scan the whole tree if that misses.
+            let targetNodeId = data.mapping[firstKeptId] ? firstKeptId : null;
+            if (!targetNodeId) {
+              for (const nid in data.mapping) {
+                if (data.mapping[nid]?.message?.id === firstKeptId) {
+                  targetNodeId = nid;
+                  break;
+                }
               }
             }
             if (targetNodeId && data.mapping[targetNodeId]) {
@@ -1081,19 +1204,7 @@
           countFailureReason: null
         });
 
-        const modifiedResponse = new Response(JSON.stringify(data), {
-          status: response.status,
-          statusText: response.statusText,
-          headers: new Headers({
-            ...Object.fromEntries(response.headers.entries()),
-            "content-type": "application/json; charset=utf-8",
-            "content-length": undefined,
-            "content-encoding": undefined
-          })
-        });
-
-        Object.defineProperty(modifiedResponse, "url", { value: response.url });
-        return modifiedResponse;
+        return buildJsonResponse(response, data);
       }
 
       // Capture pagination truth BEFORE any mutation, for the counting path.
@@ -1178,19 +1289,7 @@
         data.page_info.has_previous_page = false;
       }
 
-      const modifiedResponse = new Response(JSON.stringify(data), {
-        status: response.status,
-        statusText: response.statusText,
-        headers: new Headers({
-          ...Object.fromEntries(response.headers.entries()),
-          "content-type": "application/json; charset=utf-8",
-          "content-length": undefined,
-          "content-encoding": undefined
-        })
-      });
-
-      Object.defineProperty(modifiedResponse, "url", { value: response.url });
-      return modifiedResponse;
+      return buildJsonResponse(response, data);
     } catch (err) {
       return response;
     }

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.9.1-blue.svg?style=flat-square" alt="Version 3.9.1" />
+  <img src="https://img.shields.io/badge/Version-3.11.0-blue.svg?style=flat-square" alt="Version 3.11.0" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Privacy-100%25%20Local-emerald.svg?style=flat-square" alt="100% Local" />
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg?style=flat-square" alt="Zero dependencies" />
@@ -132,6 +132,37 @@ No dependencies and no build step. Each suite loads the **real** extension sourc
 ---
 
 ## 📜 Changelog
+
+### v3.11.0
+- ⚡ **Smoothness overhaul: the page can finally go idle.** Profiling a long chat showed TurboGPT itself was the biggest source of stutter. Every render pass it made (folders list, floating dock, load pill, sentinel) mutated the DOM, which re-triggered its own MutationObserver, which ran the render pass again - a permanent 350ms loop that never stopped, even with the tab sitting still. All TurboGPT-owned nodes are now tagged (`data-turbogpt`) and mutations inside or of them are ignored by the observer, so ticks only happen when ChatGPT itself changes something.
+- 🧊 **No more forced layout on every tick.** The context/token meter read `innerText` of every turn on each pass (twice per tick), which forces a synchronous layout of the whole conversation. It now reads `textContent` (no layout) and memoises per-turn statistics, re-reading only the two newest turns that can still be streaming.
+- 🖱️ **Scroll and wheel handlers are cheap.** The wheel listener was registered twice (window and document) and, on every upward wheel event, re-resolved the scroll container via several attribute-substring selectors plus a `getComputedStyle` walk and re-counted hidden turns with a document-wide `querySelectorAll`. Gestures now coalesce to one check per animation frame, the scroll container is cached until React replaces it, and the hidden-turn count is cached between DOM writes.
+- 📁 **Sidebar folders rebuild only when something changed** (folders, current chat, or open/closed state) instead of being wiped and recreated on every tick. Also **fixed: folders could never actually be expanded** - the open flag lived on an object that was re-read from storage on every render, so it was lost immediately.
+- 🎯 **Hide/show writes are idempotent.** Turn-limit enforcement used to rewrite `class` and `style` on every turn each pass; it now touches only turns whose state actually changes.
+- 🌙 **Background tabs stay quiet.** While the tab is hidden, only navigation is tracked; the full render pass runs once when the tab becomes visible again.
+- 🔧 **Fetch interceptor overhead trimmed** (`mainWorld.js`): the config is parsed from `localStorage` at most once per second rather than on every one of ChatGPT's many `fetch` calls; the mapping-tree walk uses `push` + `reverse` instead of quadratic `unshift`; the rewritten response now *removes* stale `content-length`/`content-encoding` headers instead of setting them to the literal string `"undefined"`.
+- 🧪 New test suite `tests/perf-v3110.test.mjs` (46 checks) covers the observer filter, the caches, memoisation, idempotent hide/show and the header fix.
+
+### v3.10.3
+- 🔧 **Message Count Alert default lowered from 1200 to 120.** A real conversation of the user's was verified (via the now-fixed full export) to hit ChatGPT's actual length limit at exactly 120 user messages — dense/technical chats can exhaust the context window in far fewer turns than a casual one. Still fully configurable in the popup.
+
+### v3.10.2
+- 🩹 **Full export time budget raised from 3 to 10 minutes.** Live-tested against a real chat that hit ChatGPT's actual length limit: the 3.9.2 pagination-discovery fix correctly found the right cursor parameter and walked 296+ messages back, but the 3-minute budget cut it off before reaching the true start (`INCOMPLETE: time-budget`). The walk itself is a fixed per-page cost now that the parameter is known upfront, so a longer budget is just letting a genuinely huge, patiently-requested archive finish.
+
+### v3.10.1
+- 🩹 **Fixed: Message Count Alert froze until the page was refreshed.** It was reading only the last server-verified total, which ChatGPT does not refresh after every turn (no new GET request happens for a normal send). It now grows live from the DOM turn count as you keep chatting, plus a fixed backlog for any older history trimmed out of the DOM entirely — no refresh needed.
+
+### v3.10.0
+- 🔢 **Message Count Alert**: a new, simple message counter in the in-chat floating dock, built on the real server-verified total turn count (not a language-dependent token estimate). Fires a one-time toast when the conversation crosses a threshold you set (default 1200, configurable in the popup under "Message Count Alert") — a stable, exact companion to the more approximate context-window meter.
+
+### v3.9.4
+- ✅ **Confirmed fix, diagnostic logging turned back off.** Live-tested the 3.9.2 pagination-discovery fix against a real maxed-out conversation: "Full conversation (.md)" now reports `complete` and reaches the true start of the chat (30 messages / 2 pages, no `INCOMPLETE` flag) instead of stopping after the first page. `DEBUG_COUNT` reset to `false`.
+
+### v3.9.3
+- 🔎 **Temporary diagnostic logging enabled** (`DEBUG_COUNT = true` in `mainWorld.js`) to trace why the 3.9.2 pagination-discovery fix still stops early (`no-progress`) on some accounts after successfully finding a working parameter name for the first older page. Logs the pagination stage, page index, and cursor *field name* only - never values, headers, tokens, or message content. Meant to be flipped back to `false` once the underlying cause is confirmed.
+
+### v3.9.2
+- 🩹 **Fixed: "Full conversation (.md)" export failing on long chats with `INCOMPLETE: no-progress`.** The backward-pagination walk used to guess a single query-parameter name for "load older messages" and give up immediately if that guess was wrong (common on accounts where ChatGPT's own infinite-scroll never fires, since the speed booster disables it). It now tries every plausible parameter name once on the first page, keeps whichever one actually returns new messages, and caches that discovery so every later page - and every future export - uses it directly with no guessing and no extra requests.
 
 ### v3.9.1
 - ⚡ **Real-Time Context Window & Token Consumption Meter**: Live gauge in popup displaying `% Used`, `% Left`, and estimated tokens remaining (calibrated for a 110,000 safe token window).
