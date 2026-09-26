@@ -29,7 +29,7 @@
         </div>
       </div>
       <div class="header-actions">
-        <span class="version-tag" id="headerVersion">v3.11.0</span>
+        <span class="version-tag" id="headerVersion">v3.13.0</span>
       </div>
     </header>
 
@@ -262,6 +262,18 @@
               <span class="switch-slider"></span>
             </label>
           </div>
+
+          <!-- Local Archive Toggle -->
+          <div class="tool-toggle-row">
+            <div class="tool-info">
+              <span class="tool-name">Local Archive</span>
+              <span class="tool-desc">Save chats &amp; images on this device for instant export</span>
+            </div>
+            <label class="custom-switch micro-switch">
+              <input type="checkbox" id="toggleLocalArchive" checked />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
         </div>
       </section>
 
@@ -292,6 +304,12 @@
               <polyline points="10 9 9 9 8 9"></polyline>
             </svg>
             Export / Select Messages
+          </button>
+        </div>
+        <div class="archive-row">
+          <span class="archive-stats" id="archiveStats">Local archive: checking…</span>
+          <button class="btn btn-secondary archive-clear-btn" id="clearArchiveBtn" title="Delete every locally archived conversation and image">
+            Delete archive
           </button>
         </div>
       </section>
@@ -362,6 +380,7 @@
   </div>
 
   <script src="popupConstants.js"></script>
+  <script src="../content/archive.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

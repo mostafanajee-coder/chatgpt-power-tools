@@ -721,6 +721,26 @@ input:checked + .switch-slider:before {
   margin-top: 10px;
 }
 
+.archive-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.archive-stats {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.btn.archive-clear-btn {
+  width: auto;
+  flex-shrink: 0;
+  padding: 6px 10px;
+}
+
 /* =========================================================
    SAVE FLOATING BAR
    ========================================================= */

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.11.0-blue.svg?style=flat-square" alt="Version 3.11.0" />
+  <img src="https://img.shields.io/badge/Version-3.13.0-blue.svg?style=flat-square" alt="Version 3.13.0" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Privacy-100%25%20Local-emerald.svg?style=flat-square" alt="100% Local" />
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg?style=flat-square" alt="Zero dependencies" />
@@ -78,7 +78,20 @@
 - **Structure survives**: fenced code blocks keep their language, links keep their URLs, and lists, tables, headings and quotes are preserved - not flattened into plain text.
 - Selective exports cover the messages currently loaded in the chat.
 
-### 🗄️ 9. Whole-Conversation Export & Continuation
+### 💾 9. Local Conversation Archive (instant export, with images)
+
+Exporting a long chat by asking OpenAI for it again can be refused, rate-limited or cut short. The local archive removes that request entirely:
+
+- **Captured from what ChatGPT already loads**: when a chat opens, ChatGPT fetches the whole conversation for itself. TurboGPT keeps a copy of that response on your device, with no extra request.
+- **Kept up to date as you chat**: each new message is saved from the page as soon as it finishes streaming.
+- **Older history filled in the background**: ChatGPT now opens a chat with only its latest turns. TurboGPT saves the older pages one at a time, one request every few seconds, using exactly the request ChatGPT makes itself. Each page is saved the moment it arrives, so if a request is refused nothing is lost and the next visit resumes from the oldest saved page. The Export window says whether the archive is complete from the first message.
+- **Images included**: pictures you upload and images ChatGPT generates are saved as real image files on your device while their links are still valid. Images from older turns that were never displayed are fetched once through ChatGPT's own file endpoint.
+- **Two instant exports** in the Export window, read only from your device:
+  - **HTML (.html, with images)**: one self-contained file with every image embedded. It opens offline in any browser, forever.
+  - **Markdown (.md, text only)**: clean text with a note where each image was.
+- **Your control**: on by default, with a toggle, archive size, and a *Delete archive* button in the popup. Nothing ever leaves your device. Temporary chats are never archived.
+
+### 🗄️ 10. Whole-Conversation Export & Continuation
 
 For a chat that hit ChatGPT's length limit and won't accept new messages:
 
@@ -94,7 +107,7 @@ Start a new chat, attach the `.md`, paste the continuation prompt, and carry on 
 - **Zero Telemetry**: No tracking, analytics, or external API servers.
 - **No Token Access**: The extension never reads or stores your ChatGPT auth token.
 - **Offline First**: All processing, trimming, and exports run 100% locally in your browser.
-- **Minimal Permissions**: Only `storage` and `activeTab`.
+- **Minimal Permissions**: `storage`, `unlimitedStorage` (for the local archive), and `activeTab`. Host access is limited to ChatGPT and OpenAI's image file host.
 - **No Account Required**: Free forever for everyone.
 
 ---
@@ -132,6 +145,23 @@ No dependencies and no build step. Each suite loads the **real** extension sourc
 ---
 
 ## 📜 Changelog
+
+### v3.13.0
+Live-verified against a real account through Chrome's remote debugging (Chrome 153, 2026-09-25).
+- 🩹 **Fixed: server walks and "Full conversation (.md)" stopping after one page.** ChatGPT's current client opens a chat with `GET /backend-api/conversations/<id>?num_turns=10` and pages older history from a *separate* path, `GET /backend-api/conversations/<id>/messages?before=<start_cursor>&num_turns=10`. Every earlier strategy put the cursor on the opening URL, which the server ignores. The backward walk (turn counter, "Load more" hydration, full export) now uses the real endpoint whenever the opening request carries `num_turns`, and skips parameter guessing entirely.
+- 💾 **Local archive: background history fill.** When the newest page is all the chat loaded, older pages are fetched one at a time (1.5 s apart, ChatGPT's own request shape and headers), each saved as it arrives, resuming from the oldest saved page on the next visit and stopping for the session on any refusal. Live run: all requests 200, no refusals, 90 messages and their images saved within 70 s.
+- 🩹 **Fixed: the archive did nothing while the speed booster was switched off.** The interceptor passed conversation requests straight through before the archive code. With the booster off, responses are now cloned for the archive and handed to ChatGPT untouched.
+- ✅ **Live results on a 285-question chat:** the background fill reached the first message (756 messages, 11/11 images) in about 7 minutes with every request answered 200; the HTML export embedded all 11 images with zero missing, zero duplicates, correct order and right-to-left Arabic. The repaired server "Full conversation (.md)" also completed (754 messages, 59 pages), but takes minutes, while the local export is instant.
+- 🧹 **ChatGPT citation tokens removed from exports.** Raw ChatGPT markdown carries private-use citation markers (`U+E200 filecite … U+E201`, 262 in the test chat) that rendered as boxes and junk text. They are now stripped from the local archive exports and from the server full export.
+- 🖼️ ChatGPT's own "load older messages" pages are archived too, in both booster modes. Verified image path: images are same-origin `chatgpt.com/backend-api/estuary/content?id=file_…` URLs, their ids match the API's `sediment://file_…` pointers, and `/backend-api/files/download/<id>` returns a fresh link for images never displayed.
+
+### v3.12.0
+- 💾 **Local conversation archive, on by default.** Exporting no longer depends on a second request to OpenAI that can be refused or cut short. The conversation payload ChatGPT already loads on open is copied to `chrome.storage.local` before trimming (all four intercepted paths: mapping tree and paginated, on open and on server export), and every new message is captured from the page once it finishes streaming. Merging is by message id: server text always wins over page-reconstructed text, an edited branch replaces the abandoned one, a message sent after the last snapshot is kept, and a "complete" response that is shorter than the archive with no new id is treated as truncated so nothing is ever lost.
+- 🖼️ **Images saved locally.** Uploaded and generated images are stored as bytes while their signed URLs are valid: from the rendered page first (same-origin fetch, or the service worker for OpenAI's file host), then, for images in turns never displayed, through ChatGPT's own file download endpoint, one throttled request per missing image and never repeated once stored. Page URLs and API asset pointers resolve to the same file id, and a content hash stops the same picture being attached twice.
+- 📤 **Two new instant export buttons** in the Export window: *Local archive (.html, with images)* builds one self-contained, offline HTML file with every image embedded and right-to-left text shown correctly; *Local archive (.md, text only)* marks where each image was. Both capture what is on screen first, then read only from local storage.
+- ⚙️ **Popup**: new *Local Archive* toggle, archive size, and a *Delete archive* button. Backups no longer pull the archive into memory. Existing installs get the new default without losing their own settings.
+- 🔒 New permissions: `unlimitedStorage` and host access to `*.oaiusercontent.com` (images only). The background image fetcher accepts only https URLs on ChatGPT/OpenAI hosts and only from the extension's own scripts. Exported HTML escapes all text and refuses any malformed image data.
+- 🧪 New suite `tests/archive-v3120.test.mjs` (72 checks).
 
 ### v3.11.0
 - ⚡ **Smoothness overhaul: the page can finally go idle.** Profiling a long chat showed TurboGPT itself was the biggest source of stutter. Every render pass it made (folders list, floating dock, load pill, sentinel) mutated the DOM, which re-triggered its own MutationObserver, which ran the render pass again - a permanent 350ms loop that never stopped, even with the tab sitting still. All TurboGPT-owned nodes are now tagged (`data-turbogpt`) and mutations inside or of them are ignored by the observer, so ticks only happen when ChatGPT itself changes something.

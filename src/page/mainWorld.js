@@ -318,7 +318,58 @@
    * fall back to a default, and a wrong name fails loudly as an HTTP error
    * rather than silently miscounting.
    */
+  // ---------- Current ChatGPT history endpoint (verified live 2026-09-25) ----------
+  //
+  // The web client opens a chat with
+  //   GET /backend-api/conversations/<id>?include_has_versions=true&num_turns=10
+  // and pages older history from a SEPARATE path:
+  //   GET /backend-api/conversations/<id>/messages?before=<start_cursor>&include_has_versions=true&num_turns=10
+  // where `before` is the previous page's page_info.start_cursor (the id of
+  // its first message). Every earlier guess put the cursor on the opening
+  // URL instead, which the server ignores - that is why server-side walks
+  // stopped after one page ("no-progress") and full exports came out short.
+  // The opening request carrying `num_turns` is the signal for this client.
+  function messagesEndpointFor(requestUrl) {
+    try {
+      const u = new URL(requestUrl, window.location.origin);
+      const m = /^\/backend-api\/conversations\/([0-9a-f-]+)\/?$/i.exec(u.pathname);
+      if (!m || !u.searchParams.has("num_turns")) return null;
+      return {
+        conversationId: m[1],
+        numTurns: u.searchParams.get("num_turns") || "10",
+        includeHasVersions: u.searchParams.get("include_has_versions")
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function buildOlderMessagesUrl(ep, cursor) {
+    const u = new URL(`/backend-api/conversations/${ep.conversationId}/messages`, window.location.origin);
+    u.searchParams.set("before", cursor);
+    if (ep.includeHasVersions != null) u.searchParams.set("include_has_versions", ep.includeHasVersions);
+    u.searchParams.set("num_turns", ep.numTurns);
+    return u.toString();
+  }
+
+  function isOlderMessagesUrl(url, method) {
+    return method === "GET" && /\/backend-api\/conversations\/[0-9a-f-]+\/messages(?:\?|$)/i.test(url);
+  }
+
   function resolveBackwardPagination({ requestUrl, pageInfo, oldestRecordId, allowProbe }) {
+    const ep = messagesEndpointFor(requestUrl);
+    if (ep) {
+      const fromPageInfo = pickBackwardCursor(pageInfo);
+      const cursorValue = fromPageInfo?.value || (allowProbe ? oldestRecordId : null);
+      if (!cursorValue) return { supported: false, reason: "pagination-contract-unknown" };
+      return {
+        supported: true,
+        nextUrl: buildOlderMessagesUrl(ep, cursorValue),
+        cursorValue,
+        parameterName: "before",
+        source: "messages-endpoint"
+      };
+    }
     const observed = loadObservedPagination();
     const parameterName = observed?.parameterName || "cursor";
 
@@ -492,6 +543,8 @@
         // Progress proof over ALL records: a page that adds no record we have
         // not already seen means the cursor went the wrong way (newer), or
         // repeated itself. Never keep walking on an unproven direction.
+        postArchiveSnapshot(conversationId, null, pageData.messages, false, pageData.page_info);
+
         const pageRecordIds = getRecordIds(pageData.messages);
         let newRecords = 0;
         for (const rid of pageRecordIds) {
@@ -848,7 +901,7 @@
 
         let pageData;
 
-        if (pagesFetched === 0 && !loadObservedPagination()) {
+        if (pagesFetched === 0 && !loadObservedPagination() && !messagesEndpointFor(baseUrl)) {
           const discovery = await discoverPaginationContract({
             baseUrl, requestInit, pageInfo: currentPageInfo, oldestRecordId, seenRecordIds
           });
@@ -951,12 +1004,224 @@
       if (m?.metadata?.is_visually_hidden_from_conversation) continue;
       const parts = m?.content?.parts;
       if (!Array.isArray(parts)) continue;
-      const text = parts.filter((p) => typeof p === "string").join("\n").trim();
+      // Drop ChatGPT's private-use citation tokens (U+E200 ... U+E201):
+      // they only mean something inside ChatGPT's own renderer.
+      const text = parts.filter((p) => typeof p === "string").join("\n")
+        .replace(/\uE200[^\uE201]*\uE201/g, "").replace(/[\uE200-\uE2FF]/g, "").trim();
       if (!text) continue;
       out.push({ role: role === "user" ? "User" : "ChatGPT", text });
     }
     return out;
   }
+
+  // ---------- Local archive feed ----------
+  //
+  // Every conversation payload ChatGPT loads already passes through this
+  // interceptor in full, before trimming. Handing a copy to the content
+  // script lets it keep a local archive, so exporting never needs a second
+  // (refusable, rate-limited) request to OpenAI. No extra request is made
+  // here; this only reuses what ChatGPT fetched for itself.
+
+  // Must stay identical to imageKeyFromPointer() in src/content/archive.js.
+  function archiveImageKey(pointer) {
+    const m = /(file[-_][A-Za-z0-9]{6,})/.exec(String(pointer || "").replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""));
+    if (!m) return null;
+    return /^file_[0-9a-f]+$/i.test(m[1]) ? m[1].toLowerCase() : m[1];
+  }
+
+  function apiMessagesToArchive(messages) {
+    const out = [];
+    if (!Array.isArray(messages)) return out;
+    for (const m of messages) {
+      const role = m?.author?.role;
+      if (role !== "user" && role !== "assistant" && role !== "tool") continue;
+      if (m?.metadata?.is_visually_hidden_from_conversation) continue;
+      if (m.id == null) continue;
+      const parts = m?.content?.parts;
+      if (!Array.isArray(parts)) continue;
+      const texts = [];
+      const images = [];
+      for (const p of parts) {
+        if (typeof p === "string") { texts.push(p); continue; }
+        if (p && typeof p === "object" && p.content_type === "image_asset_pointer" && typeof p.asset_pointer === "string") {
+          const key = archiveImageKey(p.asset_pointer);
+          if (key) {
+            images.push({
+              key,
+              pointer: p.asset_pointer,
+              width: Number.isFinite(p.width) ? p.width : null,
+              height: Number.isFinite(p.height) ? p.height : null
+            });
+          }
+        }
+      }
+      // Tool output text (browsing results, code runs) is noise in an
+      // archive; tool messages are kept only for the images they carry
+      // (generated pictures).
+      const text = role === "tool" ? "" : texts.join("\n").trim();
+      if (!text && images.length === 0) continue;
+      out.push({
+        id: String(m.id),
+        role: role === "user" ? "User" : "ChatGPT",
+        text,
+        createTime: typeof m.create_time === "number" ? m.create_time : null,
+        origin: "server",
+        images
+      });
+    }
+    return out;
+  }
+
+  // The first snapshot of a page load is posted at document_start, before
+  // the content script exists. The latest one is kept so it can be re-sent.
+  let lastArchiveSnapshot = null;
+
+  function postArchiveSnapshot(conversationId, title, messages, complete, pageInfo = null) {
+    if (!conversationId) return;
+    try {
+      const archiveMessages = apiMessagesToArchive(messages);
+      // A page of only tool/system records still moves the history cursor.
+      if (archiveMessages.length === 0 && !pageInfo) return;
+      lastArchiveSnapshot = {
+        conversationId,
+        title: typeof title === "string" ? title : null,
+        complete: complete === true,
+        messages: archiveMessages,
+        cursor: pageInfo
+          ? { start: pageInfo.start_cursor || null, hasPrevious: pageInfo.has_previous_page === true }
+          : null
+      };
+      window.postMessage({ type: "turbogpt-archive-snapshot", payload: lastArchiveSnapshot }, "*");
+    } catch {}
+  }
+
+  // Read a copy of a response ChatGPT receives unmodified. clone() happens
+  // synchronously, before ChatGPT can consume the body; parsing runs in the
+  // background and never delays or alters the original.
+  function archiveFromUntouchedResponse(response, requestUrl) {
+    if (!response || !response.ok) return;
+    let copy;
+    try { copy = response.clone(); } catch { return; }
+    (async () => {
+      let text = await copy.text();
+      if (text.charCodeAt(0) === 65279) text = text.slice(1);
+      const data = JSON.parse(text);
+      if (!data) return;
+      const conversationId = extractConversationId(requestUrl) || extractConversationId(response.url);
+      if (data.mapping && typeof data.current_node === "string") {
+        postArchiveSnapshot(conversationId, data.title, extractMessagesFromMapping(data.mapping, data.current_node), true);
+      } else if (Array.isArray(data.messages)) {
+        const firstPage = !isOlderMessagesUrl(requestUrl, "GET");
+        postArchiveSnapshot(conversationId, firstPage ? data.title : null, data.messages,
+          firstPage && data.page_info?.has_previous_page !== true, data.page_info || null);
+      }
+    })().catch(() => {});
+  }
+
+  // Background history fill for the local archive. Walks older pages with
+  // ChatGPT's own request shape and headers, one page every 1.5s, posting
+  // each page the moment it arrives - so a refusal or a closed tab loses
+  // nothing, and the next run resumes from the oldest saved page.
+  const BACKFILL_PAGE_DELAY_MS = 1500;
+  let backfillInFlightFor = null;
+
+  async function backfillArchive(conversationId, before, maxPages) {
+    const req = lastConversationRequest;
+    if (!req || req.conversationId !== conversationId) return { error: "no-conversation", pages: 0 };
+    const ep = messagesEndpointFor(req.url);
+    if (!ep) return { error: "unsupported-client", pages: 0 };
+    if (walkInFlightFor === conversationId) return { error: "walk-in-flight", pages: 0 };
+    const stillHere = () => lastConversationRequest?.conversationId === conversationId;
+    let cursor = before;
+    let pages = 0;
+    while (cursor && pages < maxPages) {
+      if (!stillHere()) return { error: "cancelled", pages };
+      const attempt = await fetchPageWithRetry(buildOlderMessagesUrl(ep, cursor), req.init, stillHere);
+      if (attempt.error) return { error: attempt.error, pages };
+      let data;
+      try {
+        let text = await attempt.res.text();
+        if (text.charCodeAt(0) === 65279) text = text.slice(1);
+        data = JSON.parse(text);
+      } catch {
+        return { error: "parse", pages };
+      }
+      if (!data || !Array.isArray(data.messages)) return { error: "schema", pages };
+      pages++;
+      postArchiveSnapshot(conversationId, null, data.messages, false, data.page_info || { has_previous_page: false });
+      const pi = data.page_info || {};
+      if (pi.has_previous_page !== true) return { reachedStart: true, pages };
+      if (!pi.start_cursor || pi.start_cursor === cursor) return { error: "no-progress", pages };
+      cursor = pi.start_cursor;
+      await sleep(BACKFILL_PAGE_DELAY_MS);
+    }
+    return { more: true, pages };
+  }
+
+  window.addEventListener("message", (e) => {
+    if (e.source !== window) return;
+    if (!e.data || e.data.type !== "turbogpt-archive-backfill") return;
+    const { conversationId, before } = e.data;
+    const maxPages = Math.max(1, Math.min(200, Number(e.data.maxPages) || 40));
+    if (!conversationId || !before || backfillInFlightFor === conversationId) return;
+    backfillInFlightFor = conversationId;
+    backfillArchive(conversationId, String(before), maxPages)
+      .catch(() => ({ error: "unexpected", pages: 0 }))
+      .then((result) => {
+        backfillInFlightFor = null;
+        window.postMessage({ type: "turbogpt-archive-backfill-done", payload: { conversationId, ...result } }, "*");
+      });
+  });
+
+  window.addEventListener("message", (e) => {
+    if (e.source !== window) return;
+    if (!e.data || e.data.type !== "turbogpt-request-archive-snapshot") return;
+    if (!lastArchiveSnapshot) return;
+    window.postMessage({ type: "turbogpt-archive-snapshot", payload: lastArchiveSnapshot }, "*");
+  });
+
+  // Images the page never rendered (trimmed turns) can only be saved by
+  // asking ChatGPT's own file endpoint for a fresh signed URL - the same
+  // call ChatGPT makes when it displays an image. One lightweight GET per
+  // missing image, only on the content script's request, never repeated
+  // once the image is stored. Endpoint shapes are tried in turn because
+  // they differ between upload kinds; a miss just leaves the image out.
+  async function resolveImageDownloadUrl(pointer, conversationId) {
+    const idMatch = /(file[-_][A-Za-z0-9]+)/.exec(String(pointer || "").replace(/^[a-z][a-z0-9+.-]*:\/\//i, ""));
+    if (!idMatch) return null;
+    const fileId = encodeURIComponent(idMatch[1]);
+    const cid = conversationId ? `conversation_id=${encodeURIComponent(conversationId)}&` : "";
+    const origin = window.location.origin;
+    const viaDownload = `${origin}/backend-api/files/download/${fileId}?${cid}inline=false`;
+    const viaFile = `${origin}/backend-api/files/${fileId}/download`;
+    const candidates = /^sediment:\/\//.test(String(pointer)) ? [viaDownload, viaFile] : [viaFile, viaDownload];
+    const init = lastConversationRequest?.init || { method: "GET", credentials: "include" };
+    for (const url of candidates) {
+      let res;
+      try {
+        res = await originalFetch.call(window, url, init);
+      } catch {
+        continue;
+      }
+      if (!res || !res.ok) continue;
+      let data;
+      try { data = await res.json(); } catch { continue; }
+      const u = data && (data.download_url || data.url);
+      if (typeof u === "string" && /^https:\/\//i.test(u)) return u;
+    }
+    return null;
+  }
+
+  window.addEventListener("message", (e) => {
+    if (e.source !== window) return;
+    if (!e.data || e.data.type !== "turbogpt-resolve-image") return;
+    const { requestId, pointer, conversationId } = e.data;
+    resolveImageDownloadUrl(pointer, conversationId)
+      .catch(() => null)
+      .then((url) => {
+        window.postMessage({ type: "turbogpt-resolved-image", requestId, url: url || null }, "*");
+      });
+  });
 
   function extractMessagesFromMapping(mapping, currentNode) {
     if (!mapping || typeof mapping !== "object" || !currentNode) return [];
@@ -1013,6 +1278,7 @@
 
     if (data.mapping && typeof data.current_node === "string") {
       const chain = extractMessagesFromMapping(data.mapping, data.current_node);
+      postArchiveSnapshot(conversationId, data.title, chain, true);
       return {
         conversationId,
         messages: apiMessagesToExport(chain),
@@ -1035,6 +1301,8 @@
         window.postMessage({ type: "turbogpt-full-export-progress", payload: p }, "*");
       }
     });
+    postArchiveSnapshot(conversationId, data.title, result.messages, result.reachedStart === true,
+      result.pagesFetched > 0 ? result.lastPageInfo : data.page_info);
 
     return {
       conversationId,
@@ -1138,6 +1406,8 @@
 
       if (isMappingFormat) {
         const allMessages = extractMessagesFromMapping(data.mapping, data.current_node);
+        // Full active branch, captured before any trimming.
+        postArchiveSnapshot(conversationId, data.title, allMessages, true);
         const totalUserTurns = countUserTurns(allMessages);
         const allUserIdsOrdered = getUserIdsInOrder(allMessages);
 
@@ -1234,6 +1504,14 @@
         workingMessages = hydration.messages;
       }
 
+      postArchiveSnapshot(
+        conversationId,
+        data.title,
+        workingMessages,
+        hydration.pagesFetched > 0 ? hydration.reachedStart : !serverHasOlderInitially,
+        hydration.pagesFetched > 0 ? hydration.lastPageInfo : originalPageInfo
+      );
+
       const totalMessages = workingMessages.length;
       const keptMessages = trimConversationMessages(workingMessages, payloadTurnLimit);
       const renderedCount = keptMessages.length;
@@ -1321,7 +1599,22 @@
     }
 
     if (!appConfig.enabled) {
+      // Booster off: the response goes to ChatGPT untouched, but the local
+      // archive still gets its copy. It is independent of the speed switch.
+      if ((isConversationUrl(url, method) && !isPaginationRequest(url)) || isOlderMessagesUrl(url, method)) {
+        const res = await originalFetch.apply(this, args);
+        archiveFromUntouchedResponse(res, url);
+        return res;
+      }
       return originalFetch.apply(this, args);
+    }
+
+    // ChatGPT's own "load older messages" page. Display behaviour is left
+    // exactly as ChatGPT intends; the archive just keeps a copy.
+    if (isOlderMessagesUrl(url, method)) {
+      const res = await originalFetch.apply(this, args);
+      archiveFromUntouchedResponse(res, url);
+      return res;
     }
 
     if (isConversationSendUrl(url, method)) {

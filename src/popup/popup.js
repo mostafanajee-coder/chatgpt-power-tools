@@ -13,6 +13,7 @@
     const toggleOutline = document.getElementById("toggleOutline");
     const toggleSearch = document.getElementById("toggleSearch");
     const toggleFolders = document.getElementById("toggleFolders");
+    const toggleLocalArchive = document.getElementById("toggleLocalArchive");
 
     const messageLimitInput = document.getElementById("messageLimit");
     const loadBatchSizeInput = document.getElementById("loadBatchSize");
@@ -49,6 +50,7 @@
       enableOutline: true,
       enableSearch: true,
       enableFolders: true,
+      enableLocalArchive: true,
       liveAutoTrim: false,
       disableNotifications: false
     };
@@ -211,6 +213,7 @@
         enableOutline: toggleOutline ? toggleOutline.checked : true,
         enableSearch: toggleSearch ? toggleSearch.checked : true,
         enableFolders: toggleFolders ? toggleFolders.checked : true,
+        enableLocalArchive: toggleLocalArchive ? toggleLocalArchive.checked : true,
         disableNotifications: false
       };
     }
@@ -258,11 +261,12 @@
       if (toggleOutline) toggleOutline.checked = s.enableOutline !== false;
       if (toggleSearch) toggleSearch.checked = s.enableSearch !== false;
       if (toggleFolders) toggleFolders.checked = s.enableFolders !== false;
+      if (toggleLocalArchive) toggleLocalArchive.checked = s.enableLocalArchive !== false;
 
       initialSettings = getCurrentSettings();
     });
 
-    [toggleEnabled, toggleLiveAutoTrim, toggleAutoScrollLoad, toggleFloatingButton, toggleOutline, toggleSearch, toggleFolders].forEach(el => {
+    [toggleEnabled, toggleLiveAutoTrim, toggleAutoScrollLoad, toggleFloatingButton, toggleOutline, toggleSearch, toggleFolders, toggleLocalArchive].forEach(el => {
       if (el) el.addEventListener("change", () => saveSettings());
     });
 
@@ -412,7 +416,19 @@
 
     if (exportBackupBtn) {
       exportBackupBtn.addEventListener("click", () => {
-        chrome.storage.local.get(null, (items) => {
+        // The archive can be hundreds of MB: never pull it into memory just
+        // to throw it away - backups cover settings, folders and bookmarks.
+        const collectBackupItems = (done) => {
+          const local = chrome.storage.local;
+          if (typeof local.getKeys === "function") {
+            local.getKeys().then((keys) => {
+              local.get((keys || []).filter((k) => !k.startsWith("turbogpt_archive_")), done);
+            }).catch(() => local.get(null, done));
+          } else {
+            local.get(null, done);
+          }
+        };
+        collectBackupItems((items) => {
           const backup = {
             app: "TurboGPT",
             version: chrome.runtime.getManifest()?.version || "3.8.0",
@@ -551,6 +567,39 @@
       });
     }
 
+    // Local archive stats + delete
+    const archiveStatsEl = document.getElementById("archiveStats");
+    const clearArchiveBtn = document.getElementById("clearArchiveBtn");
+    const ArchiveApi = window.TurboGPTArchive || null;
+
+    function formatBytes(n) {
+      if (!Number.isFinite(n)) return "";
+      if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+      return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function refreshArchiveStats() {
+      if (!archiveStatsEl) return;
+      if (!ArchiveApi) { archiveStatsEl.textContent = "Local archive unavailable"; return; }
+      ArchiveApi.stats().then((st) => {
+        const size = st.bytes ? ` · ${formatBytes(st.bytes)}` : "";
+        archiveStatsEl.textContent = `Local archive: ${st.conversations} chat${st.conversations === 1 ? "" : "s"} · ${st.images} image${st.images === 1 ? "" : "s"}${size}`;
+      }).catch(() => { archiveStatsEl.textContent = "Local archive: unreadable"; });
+    }
+
+    if (clearArchiveBtn) {
+      clearArchiveBtn.addEventListener("click", () => {
+        if (!ArchiveApi) return;
+        if (!confirm("Delete every locally archived conversation and image on this device? Your chats on ChatGPT are not affected.")) return;
+        clearArchiveBtn.disabled = true;
+        ArchiveApi.clearAll().then(() => {
+          clearArchiveBtn.disabled = false;
+          refreshArchiveStats();
+        });
+      });
+    }
+
+    refreshArchiveStats();
     initStats();
   });
 })();

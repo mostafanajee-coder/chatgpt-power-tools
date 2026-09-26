@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "TurboGPT – Chat Speed Booster & Exporter",
-  "version": "3.11.0",
-  "description": "Accelerates ChatGPT by eliminating UI lag in long chats. Real-time context window & token meter, selective chat export (Word .docx, PDF, Markdown, JSON), in-chat outline, bookmarks, search, and folders.",
+  "version": "3.13.0",
+  "description": "Accelerates ChatGPT by eliminating UI lag in long chats. Real-time context window & token meter, selective chat export (Word .docx, PDF, Markdown, JSON), local conversation archive with images, in-chat outline, bookmarks, search, and folders.",
   "action": {
     "default_icon": {
       "16": "icons/icon16.png",
@@ -33,6 +33,7 @@
         "https://chat.openai.com/*"
       ],
       "js": [
+        "src/content/archive.js",
         "src/content/index.js"
       ],
       "run_at": "document_idle"
@@ -40,10 +41,12 @@
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
-    "https://chat.openai.com/*"
+    "https://chat.openai.com/*",
+    "https://*.oaiusercontent.com/*"
   ],
   "permissions": [
     "storage",
+    "unlimitedStorage",
     "activeTab"
   ],
   "icons": {

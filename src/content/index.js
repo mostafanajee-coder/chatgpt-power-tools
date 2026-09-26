@@ -23,9 +23,19 @@
     enableOutline: true,
     enableSearch: true,
     enableFolders: true,
+    enableLocalArchive: true,
     liveAutoTrim: false,
     disableNotifications: false
   };
+
+  // Resolves once the stored settings are known (or after a short timeout),
+  // so nothing that depends on a user switch - the local archive - runs on
+  // defaults the user may have turned off.
+  let resolveSettingsReady = null;
+  const settingsReady = new Promise((resolve) => {
+    resolveSettingsReady = resolve;
+    setTimeout(resolve, 3000);
+  });
 
   const STATUS_SESSION_KEY = "turbogpt_last_status";
 
@@ -266,9 +276,11 @@
             liveAutoTrim: appSettings.liveAutoTrim === true
           }));
         } catch {}
+        if (resolveSettingsReady) resolveSettingsReady();
         renderAllTools();
       });
     } catch {
+      if (resolveSettingsReady) resolveSettingsReady();
       renderAllTools();
     }
     restoreScrollIfPending();
@@ -351,6 +363,22 @@
       waiters.forEach((w) => { if (!w.done) { w.done = true; w.resolve(e.data.payload || {}); } });
       return;
     }
+    if (e.data && e.data.type === "turbogpt-archive-snapshot") {
+      archiveIngestSnapshot(e.data.payload);
+      return;
+    }
+    if (e.data && e.data.type === "turbogpt-archive-backfill-done") {
+      archiveOnBackfillDone(e.data.payload);
+      return;
+    }
+    if (e.data && e.data.type === "turbogpt-resolved-image") {
+      const waiter = imageResolveWaiters.get(e.data.requestId);
+      if (waiter) {
+        imageResolveWaiters.delete(e.data.requestId);
+        waiter(e.data.url || null);
+      }
+      return;
+    }
     if (e.data && e.data.type === "turbogpt-full-export-progress") {
       const el = document.getElementById("turbogpt-full-progress");
       if (el && e.data.payload) {
@@ -382,6 +410,9 @@
     }
     try {
       window.postMessage({ type: "turbogpt-request-status" }, "*");
+      // The archive snapshot of the first page load was posted before this
+      // script existed; ask for it again.
+      window.postMessage({ type: "turbogpt-request-archive-snapshot" }, "*");
     } catch {}
   }
 
@@ -1274,6 +1305,17 @@
       @media (max-width: 640px) {
         .turbogpt-topbar-export span { display: none; }
         .turbogpt-topbar-export { padding: 0 10px; }
+      }
+
+      /* Local archive export box */
+      .turbogpt-full-export-box.turbogpt-local-archive-box {
+        border-color: #6ee7b7;
+        background: #f0fdf8;
+      }
+      .turbogpt-full-export-box.turbogpt-local-archive-box .turbogpt-full-export-title { color: #047857; }
+      @media (prefers-color-scheme: dark) {
+        .turbogpt-full-export-box.turbogpt-local-archive-box { background: #06231b; border-color: #047857; }
+        .turbogpt-full-export-box.turbogpt-local-archive-box .turbogpt-full-export-title { color: #6ee7b7; }
       }
 
       /* Whole-conversation export box */
@@ -3537,6 +3579,20 @@
             <button class="turbogpt-link-btn" id="turbogpt-select-none">None</button>
           </div>
           <div id="turbogpt-export-list" style="display:flex;flex-direction:column;gap:5px;max-height:220px;overflow-y:auto;"></div>
+          <div class="turbogpt-full-export-box turbogpt-local-archive-box">
+            <div class="turbogpt-full-export-title">💾 Local archive (saved on this device)</div>
+            <div class="turbogpt-full-export-hint" id="turbogpt-local-archive-info">Checking the local archive…</div>
+            <div class="turbogpt-export-grid" style="margin-top:8px;">
+              <button class="turbogpt-export-option-btn turbogpt-local-btn" id="turbogpt-export-local-html" disabled>
+                <span>🖼️ Local archive (.html, with images)</span>
+                <span style="font-size:11px;color:#059669;">Instant →</span>
+              </button>
+              <button class="turbogpt-export-option-btn turbogpt-local-btn" id="turbogpt-export-local-md" disabled>
+                <span>📝 Local archive (.md, text only)</span>
+                <span style="font-size:11px;color:#059669;">Instant →</span>
+              </button>
+            </div>
+          </div>
           <div class="turbogpt-full-export-box">
             <div class="turbogpt-full-export-title">🗄️ Whole conversation (from the server)</div>
             <div class="turbogpt-full-export-hint">
@@ -3620,7 +3676,7 @@
     function updateExportState() {
       const n = selectedMessages().length;
       modal.querySelector("#turbogpt-export-count").textContent = `${n} message${n === 1 ? "" : "s"} selected`;
-      modal.querySelectorAll(".turbogpt-export-option-btn").forEach((b) => { b.disabled = n === 0; });
+      modal.querySelectorAll(".turbogpt-export-option-btn:not(.turbogpt-local-btn)").forEach((b) => { b.disabled = n === 0; });
     }
 
     checkboxes.forEach((cb) => cb.addEventListener("change", updateExportState));
@@ -3719,6 +3775,8 @@
       });
     });
 
+    initLocalArchiveExport(modal, title, fileBase);
+
     modal.querySelector("#turbogpt-export-pdf").addEventListener("click", () => {
       const msgs = selectedMessages();
       modal.remove();
@@ -3777,6 +3835,428 @@
       html += `<script>window.onload = () => { window.print(); };<\/script></body></html>`;
       printWindow.document.write(html);
       printWindow.document.close();
+    });
+  }
+
+  // 7. Local conversation archive
+  //
+  // See src/content/archive.js for the model. This part feeds it: server
+  // snapshots from mainWorld, finished messages and images from the page,
+  // and missing images through ChatGPT's own file endpoint. All archive
+  // work is serialised through one promise chain so an async storage load
+  // can never interleave with a concurrent update and lose a message.
+
+  const Archive = globalThis.TurboGPTArchive || null;
+  const ARCHIVE_SAVE_DEBOUNCE_MS = 1200;
+  const ARCHIVE_LIVE_WINDOW = 6;
+  const ARCHIVE_RESOLVE_DELAY_MS = 4000;
+  const ARCHIVE_RESOLVE_SPACING_MS = 600;
+  const ARCHIVE_RESOLVE_MAX_PER_PASS = 40;
+
+  const archiveState = {
+    convId: null,
+    archive: null,
+    dirty: false,
+    saveTimer: null,
+    resolveTimer: null,
+    domSig: new Map(),
+    seenImages: new Set(),
+    attemptedResolve: new Set()
+  };
+  let archiveChain = Promise.resolve();
+  const imageResolveWaiters = new Map();
+  let imageResolveSeq = 0;
+
+  function archiveEnabled() {
+    return !!Archive && appSettings.enableLocalArchive !== false;
+  }
+
+  function archiveRun(task) {
+    const next = archiveChain.then(task).catch(() => {});
+    archiveChain = next;
+    return next;
+  }
+
+  async function archiveFlushNow() {
+    if (archiveState.saveTimer) {
+      clearTimeout(archiveState.saveTimer);
+      archiveState.saveTimer = null;
+    }
+    if (!archiveState.archive || !archiveState.dirty) return;
+    archiveState.dirty = false;
+    await Archive.saveConversation(archiveState.archive);
+  }
+
+  function archiveMarkDirty() {
+    archiveState.dirty = true;
+    if (archiveState.saveTimer) clearTimeout(archiveState.saveTimer);
+    archiveState.saveTimer = setTimeout(() => archiveRun(archiveFlushNow), ARCHIVE_SAVE_DEBOUNCE_MS);
+  }
+
+  // Must only be called from inside archiveRun().
+  async function archiveEnsure(convId) {
+    if (archiveState.convId === convId && archiveState.archive) return archiveState.archive;
+    await archiveFlushNow();
+    archiveState.convId = convId;
+    archiveState.domSig = new Map();
+    archiveState.archive = (await Archive.loadConversation(convId)) || Archive.emptyArchive(convId);
+    return archiveState.archive;
+  }
+
+  function archiveIngestSnapshot(payload) {
+    if (!archiveEnabled() || !payload || !payload.conversationId || !Array.isArray(payload.messages)) return;
+    archiveRun(async () => {
+      await settingsReady;
+      if (!archiveEnabled()) return;
+      const a = await archiveEnsure(payload.conversationId);
+      a.messages = Archive.mergeMessages(a.messages, payload.messages, { complete: payload.complete === true });
+      if (payload.title) a.title = payload.title;
+      a.lastServerSyncAt = Date.now();
+      if (payload.complete === true) {
+        a.serverComplete = true;
+        a.reachedStart = true;
+      }
+      Archive.updateHistoryCursor(a, payload);
+      archiveState.dirty = true;
+      await archiveFlushNow();
+      archiveScheduleResolve(payload.conversationId);
+      archiveScheduleBackfill(payload.conversationId);
+    });
+  }
+
+  // History fill: ask mainWorld to walk older pages from the oldest one
+  // saved. Throttled there (one page per 1.5s); here it is started at most
+  // once at a time per chat, a few seconds after the chat settles, and
+  // stopped for the session on any server refusal.
+  const ARCHIVE_BACKFILL_DELAY_MS = 6000;
+  const ARCHIVE_BACKFILL_PAGES_PER_RUN = 40;
+  const backfillState = { timer: null, running: null, stoppedFor: new Set() };
+
+  function archiveScheduleBackfill(convId) {
+    if (backfillState.timer) clearTimeout(backfillState.timer);
+    backfillState.timer = setTimeout(() => {
+      backfillState.timer = null;
+      const a = archiveState.convId === convId ? archiveState.archive : null;
+      if (!archiveEnabled() || !a || a.reachedStart || !a.oldestCursor) return;
+      if (backfillState.running === convId || backfillState.stoppedFor.has(convId)) return;
+      if (getConversationId() !== convId) return;
+      backfillState.running = convId;
+      try {
+        window.postMessage({
+          type: "turbogpt-archive-backfill",
+          conversationId: convId,
+          before: a.oldestCursor,
+          maxPages: ARCHIVE_BACKFILL_PAGES_PER_RUN
+        }, "*");
+      } catch {
+        backfillState.running = null;
+      }
+    }, ARCHIVE_BACKFILL_DELAY_MS);
+  }
+
+  function archiveOnBackfillDone(result) {
+    if (!result || !result.conversationId) return;
+    if (backfillState.running === result.conversationId) backfillState.running = null;
+    if (result.error && result.error !== "walk-in-flight") {
+      // Refused, rate-limited or navigated away: keep what was saved and
+      // resume on the next visit, never hammer the server.
+      backfillState.stoppedFor.add(result.conversationId);
+      return;
+    }
+    if (result.more || result.error === "walk-in-flight") {
+      // Queued behind the pages still being ingested.
+      archiveRun(async () => { archiveScheduleBackfill(result.conversationId); });
+    }
+  }
+
+  let archiveCaptureScheduled = false;
+  function scheduleArchiveCapture() {
+    if (!archiveEnabled() || archiveCaptureScheduled) return;
+    archiveCaptureScheduled = true;
+    const run = () => {
+      archiveCaptureScheduled = false;
+      archiveCaptureLive();
+    };
+    // Idle time only: archiving must never compete with typing or scrolling.
+    if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 2000 });
+    else setTimeout(run, 250);
+  }
+
+  function collectDomImages() {
+    const out = [];
+    const imgs = document.querySelectorAll('[data-testid^="conversation-turn"] img, article img');
+    imgs.forEach((img) => {
+      if (img.closest(OWNED_SELECTOR)) return;
+      // Not loaded yet (lazy or inside a hidden turn): picked up later, or
+      // through the file endpoint.
+      if (!img.complete || !img.naturalWidth) return;
+      // Avatars, favicons, icons.
+      if (img.naturalWidth < 64 && img.naturalHeight < 64) return;
+      const src = img.currentSrc || img.src;
+      if (!src || /^data:image\/svg/i.test(src)) return;
+      const key = Archive.imageKeyForUrl(src);
+      if (!key || archiveState.seenImages.has(key)) return;
+      const turn = img.closest('[data-testid^="conversation-turn"], article');
+      const holder = img.closest("[data-message-id]") || (turn ? turn.querySelector("[data-message-id]") : null);
+      const messageId = holder ? holder.getAttribute("data-message-id") : null;
+      if (!messageId) return;
+      out.push({
+        key,
+        src,
+        messageId,
+        role: holder.getAttribute("data-message-author-role") || "assistant",
+        width: img.naturalWidth,
+        height: img.naturalHeight
+      });
+    });
+    return out;
+  }
+
+  /**
+   * Capture finished messages from the page. By default only the newest few
+   * (the ones that can be new since the last server snapshot); `all` walks
+   * every message element, used right before a local export.
+   */
+  function archiveCaptureLive(opts = {}) {
+    if (!archiveEnabled()) return Promise.resolve();
+    const convId = getConversationId();
+    if (!convId || isTemporaryChat()) return Promise.resolve();
+    if (isStreamingNow()) return Promise.resolve();
+
+    const els = Array.from(document.querySelectorAll("[data-message-id][data-message-author-role]"))
+      .filter((el) => !el.closest(OWNED_SELECTOR));
+    const start = opts.all ? 0 : Math.max(0, els.length - ARCHIVE_LIVE_WINDOW);
+    const updates = [];
+    const sameConv = archiveState.convId === convId;
+    for (let i = start; i < els.length; i++) {
+      const el = els[i];
+      const roleAttr = el.getAttribute("data-message-author-role");
+      if (roleAttr !== "user" && roleAttr !== "assistant") continue;
+      const id = el.getAttribute("data-message-id");
+      if (!id) continue;
+      // Cheap change detector: rebuilding markdown for unchanged messages on
+      // every tick would be wasted work.
+      const sig = (el.textContent || "").length;
+      if (sameConv && archiveState.domSig.get(id) === sig) continue;
+      const msg = messageFromElement(el, roleAttr === "user" ? "User" : "ChatGPT");
+      if (!msg.text) continue;
+      updates.push({
+        sig,
+        pos: {
+          prevId: i > 0 ? els[i - 1].getAttribute("data-message-id") : null,
+          nextId: i + 1 < els.length ? els[i + 1].getAttribute("data-message-id") : null
+        },
+        message: { id, role: msg.role, text: msg.text, origin: "dom", capturedAt: Date.now(), images: [] }
+      });
+    }
+    const images = collectDomImages();
+    if (updates.length === 0 && images.length === 0) return Promise.resolve();
+    images.forEach((im) => archiveState.seenImages.add(im.key));
+
+    return archiveRun(async () => {
+      await settingsReady;
+      if (!archiveEnabled()) return;
+      const a = await archiveEnsure(convId);
+      for (const u of updates) {
+        a.messages = Archive.upsertMessage(a.messages, u.message, u.pos);
+        archiveState.domSig.set(u.message.id, u.sig);
+      }
+      if (updates.length) archiveMarkDirty();
+      for (const im of images) {
+        const ref = { key: im.key, width: im.width, height: im.height };
+        if (!(await Archive.hasImage(im.key))) {
+          const data = await fetchImageAsDataUrl(im.src);
+          if (!data) { archiveState.seenImages.delete(im.key); continue; }
+          const rec = await Archive.saveImage(im.key, {
+            dataUrl: data.dataUrl, mime: data.mime, width: im.width, height: im.height, source: "page"
+          });
+          if (!rec) continue;
+          ref.hash = rec.hash;
+        }
+        a.messages = Archive.attachImage(a.messages, im.messageId, ref, { role: im.role });
+        archiveMarkDirty();
+      }
+    });
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve) => {
+      try {
+        const r = new FileReader();
+        r.onload = () => resolve(typeof r.result === "string" ? r.result : null);
+        r.onerror = () => resolve(null);
+        r.readAsDataURL(blob);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  async function fetchImageAsDataUrl(src) {
+    if (/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(src)) {
+      return { dataUrl: src, mime: src.slice(5, src.indexOf(";")) };
+    }
+    // Same-origin and blob: images are readable straight from the page.
+    try {
+      const u = new URL(src, window.location.href);
+      if (u.protocol === "blob:" || u.origin === window.location.origin) {
+        const res = await fetch(u.href, { credentials: "include" });
+        if (res.ok) {
+          const blob = await res.blob();
+          if (blob.size > 0 && blob.size <= Archive.MAX_IMAGE_BYTES) {
+            const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+            const mime = Archive.sniffImageMime(head) || (/^image\//.test(blob.type) ? blob.type : null);
+            if (mime) {
+              const dataUrl = await blobToDataUrl(blob.type === mime ? blob : new Blob([blob], { type: mime }));
+              if (dataUrl) return { dataUrl, mime };
+            }
+          }
+        }
+        if (u.protocol === "blob:") return null;
+      }
+    } catch {}
+    // Cross-origin file hosts: fetched by the service worker.
+    try {
+      const resp = await chrome.runtime.sendMessage({ type: "TURBOGPT_FETCH_IMAGE", url: src });
+      if (resp && resp.dataUrl) return resp;
+    } catch {}
+    return null;
+  }
+
+  function requestImageUrl(pointer, conversationId) {
+    return new Promise((resolve) => {
+      const requestId = `img-${Date.now()}-${++imageResolveSeq}`;
+      const timer = setTimeout(() => {
+        imageResolveWaiters.delete(requestId);
+        resolve(null);
+      }, 15000);
+      imageResolveWaiters.set(requestId, (url) => { clearTimeout(timer); resolve(url); });
+      try {
+        window.postMessage({ type: "turbogpt-resolve-image", requestId, pointer, conversationId }, "*");
+      } catch {
+        clearTimeout(timer);
+        imageResolveWaiters.delete(requestId);
+        resolve(null);
+      }
+    });
+  }
+
+  function archiveScheduleResolve(convId) {
+    if (archiveState.resolveTimer) clearTimeout(archiveState.resolveTimer);
+    // Give the page a head start: images it renders are captured for free.
+    archiveState.resolveTimer = setTimeout(() => {
+      archiveState.resolveTimer = null;
+      archiveResolveMissing(convId);
+    }, ARCHIVE_RESOLVE_DELAY_MS);
+  }
+
+  // Runs outside the archive chain (it waits on the network); each result
+  // re-enters the chain only for the quick attach-and-save step.
+  async function archiveResolveMissing(convId) {
+    if (!archiveEnabled() || archiveState.convId !== convId || !archiveState.archive) return;
+    const pending = [];
+    for (const m of archiveState.archive.messages) {
+      for (const im of m.images || []) {
+        if (!im.pointer || archiveState.attemptedResolve.has(im.key)) continue;
+        pending.push({ messageId: m.id, ref: im });
+      }
+    }
+    let done = 0;
+    for (const item of pending) {
+      if (done >= ARCHIVE_RESOLVE_MAX_PER_PASS) break;
+      if (archiveState.convId !== convId) return;
+      archiveState.attemptedResolve.add(item.ref.key);
+      if (await Archive.hasImage(item.ref.key)) continue;
+      done++;
+      const url = await requestImageUrl(item.ref.pointer, convId);
+      const data = url ? await fetchImageAsDataUrl(url) : null;
+      if (data) {
+        await archiveRun(async () => {
+          const rec = await Archive.saveImage(item.ref.key, {
+            dataUrl: data.dataUrl, mime: data.mime,
+            width: item.ref.width || null, height: item.ref.height || null, source: "file-endpoint"
+          });
+          if (!rec || archiveState.convId !== convId) return;
+          archiveState.archive.messages = Archive.attachImage(
+            archiveState.archive.messages, item.messageId, { ...item.ref, hash: rec.hash }
+          );
+          archiveMarkDirty();
+        });
+      }
+      await new Promise((r) => setTimeout(r, ARCHIVE_RESOLVE_SPACING_MS));
+    }
+  }
+
+  // Export modal: the local archive section.
+  function initLocalArchiveExport(modal, title, fileBase) {
+    const info = modal.querySelector("#turbogpt-local-archive-info");
+    const htmlBtn = modal.querySelector("#turbogpt-export-local-html");
+    const mdBtn = modal.querySelector("#turbogpt-export-local-md");
+    if (!info || !htmlBtn || !mdBtn) return;
+
+    const convId = getConversationId();
+    const setState = (text, enabled) => {
+      info.textContent = text;
+      htmlBtn.disabled = !enabled;
+      mdBtn.disabled = !enabled;
+    };
+
+    if (!Archive) { setState("Local archive is unavailable in this build.", false); return; }
+    if (!archiveEnabled()) { setState("Local archive is off. Turn it on in the TurboGPT popup.", false); return; }
+    if (!convId || isTemporaryChat()) { setState("Temporary chats are not archived.", false); return; }
+
+    // Latest on-screen messages first, so the export includes what you see.
+    const loadFresh = async () => {
+      await archiveCaptureLive({ all: true });
+      await archiveRun(archiveFlushNow);
+      return Archive.loadConversation(convId);
+    };
+
+    const describe = (a) => {
+      const msgs = a.messages.filter((m) => m.text || (m.images && m.images.length)).length;
+      const imgs = Archive.countImages(a);
+      const when = a.updatedAt ? new Date(a.updatedAt).toLocaleString() : "unknown";
+      const history = a.reachedStart
+        ? "Complete from the first message."
+        : "Older history is still being saved in the background; export now gives everything saved so far.";
+      return `${msgs} messages · ${imgs} images · saved ${when}. ${history} Exports read only from this device, no request to OpenAI.`;
+    };
+
+    loadFresh().then((a) => {
+      if (!a || a.messages.length === 0) {
+        setState("Nothing archived for this chat yet. It is saved automatically as soon as the chat loads.", false);
+        return;
+      }
+      setState(describe(a), true);
+    }).catch(() => setState("Could not read the local archive.", false));
+
+    const bestTitle = (a) => (title && title !== "ChatGPT Conversation" ? title : (a.title || title));
+
+    mdBtn.addEventListener("click", async () => {
+      const a = await loadFresh();
+      if (!a || a.messages.length === 0) { toast("Nothing archived for this chat yet."); return; }
+      const md = Archive.buildMarkdownExport(a, { title: bestTitle(a) });
+      downloadBlob(md, `${fileBase()}-archive.md`, "text/markdown;charset=utf-8");
+      toast("Exported from the local archive.");
+    });
+
+    htmlBtn.addEventListener("click", async () => {
+      htmlBtn.disabled = true;
+      const original = htmlBtn.innerHTML;
+      htmlBtn.innerHTML = "<span>Building HTML…</span>";
+      try {
+        const a = await loadFresh();
+        if (!a || a.messages.length === 0) { toast("Nothing archived for this chat yet."); return; }
+        const keys = [];
+        a.messages.forEach((m) => (m.images || []).forEach((im) => keys.push(im.key)));
+        const images = await Archive.loadImages(keys);
+        const html = Archive.buildHtmlExport(a, images, { title: bestTitle(a) });
+        downloadBlob(html, `${fileBase()}-archive.html`, "text/html;charset=utf-8");
+        toast(`Exported from the local archive (${images.size} image${images.size === 1 ? "" : "s"} embedded).`);
+      } finally {
+        htmlBtn.disabled = false;
+        htmlBtn.innerHTML = original;
+      }
     });
   }
 
@@ -3890,6 +4370,8 @@
       }
     }
     wasStreaming = isStreaming;
+    // A message is archived once it has finished streaming, never mid-way.
+    if (!isStreaming) scheduleArchiveCapture();
 
     if (appSettings.enabled) {
       enforceDomTurnLimit({ live: true });
@@ -3915,10 +4397,16 @@
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && tickPendingWhileHidden && !moTimer) {
+    if (document.hidden) {
+      // Leaving the tab: write any pending archive change now.
+      archiveRun(archiveFlushNow);
+      return;
+    }
+    if (tickPendingWhileHidden && !moTimer) {
       moTimer = setTimeout(runObserverTick, 50);
     }
   });
+  window.addEventListener("pagehide", () => { archiveRun(archiveFlushNow); });
 
   // Prompt submission listeners: trigger turn enforcement immediately when user sends a message
   document.addEventListener("keydown", (e) => {
