@@ -19,7 +19,8 @@ const SUITES = [
   ["Export pipeline (extraction, full export, continuation)", "export.test.mjs"],
   ["v3.8.0 Features (DOM Limit, Backup, Full Search)", "features-v380.test.mjs"],
   ["v3.11.0 Smoothness (observer hygiene, no forced layout, caches)", "perf-v3110.test.mjs"],
-  ["v3.12.0 Local archive (identity, merge, safe HTML, storage, wiring)", "archive-v3120.test.mjs"]
+  ["v3.12.0 Local archive (identity, merge, safe HTML, storage, wiring)", "archive-v3120.test.mjs"],
+  ["Current ChatGPT app DOM compatibility (Visible Messages = 1)", "app-dom-v313.test.mjs"]
 ];
 
 let failed = 0;

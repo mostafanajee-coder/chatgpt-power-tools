@@ -103,7 +103,86 @@
     return getConversationId();
   }
 
+  // ChatGPT's newer "app" renderer no longer exposes the old
+  // data-testid/data-message-author-role markers.  It groups each exchange in
+  // [data-turn-key], puts the user bubble under [data-user-message-bubble],
+  // and labels search units with a :user/:assistant suffix.  Keep these
+  // selectors in one compatibility layer so turn limiting, stats and the
+  // navigator all agree about what a turn is.
+  const CHATGPT_APP_TURN_SELECTOR = '[data-turn-key]';
+  const USER_MESSAGE_SELECTOR = '[data-message-author-role="user"], [data-user-message-bubble], [data-content-search-unit-key$=":user"]';
+  const ASSISTANT_MESSAGE_SELECTOR = '[data-message-author-role="assistant"], [data-markdown-text-style="assistant-message"], [data-content-search-unit-key$=":assistant"]';
+
+  function isUserTurn(turn) {
+    if (!turn) return false;
+    if (turn.getAttribute?.('data-message-author-role') === 'user') return true;
+    if (turn.matches?.(USER_MESSAGE_SELECTOR)) return true;
+    return !!turn.querySelector?.(USER_MESSAGE_SELECTOR);
+  }
+
+  function isAssistantTurn(turn) {
+    if (!turn) return false;
+    if (turn.getAttribute?.('data-message-author-role') === 'assistant') return true;
+    if (turn.matches?.(ASSISTANT_MESSAGE_SELECTOR)) return true;
+    return !!turn.querySelector?.(ASSISTANT_MESSAGE_SELECTOR);
+  }
+
+  function getTurnForMessageElement(el) {
+    if (!el) return null;
+    return el.closest?.(CHATGPT_APP_TURN_SELECTOR) ||
+           el.closest?.('[data-testid^="conversation-turn"]') ||
+           el.closest?.('[class*="conversation-turn"]') ||
+           el.closest?.('article') ||
+           el.closest?.('.turbogpt-dom-hidden') ||
+           el;
+  }
+
+  function getMessageElements(selector) {
+    const out = [];
+    for (const turn of getAllConversationTurns()) {
+      const el = turn.matches?.(selector) ? turn : turn.querySelector?.(selector);
+      if (el && !out.includes(el)) out.push(el);
+    }
+    return out;
+  }
+
+  function getUserMessageElements() {
+    return getMessageElements(USER_MESSAGE_SELECTOR);
+  }
+
+  function getAssistantMessageElements() {
+    return getMessageElements(ASSISTANT_MESSAGE_SELECTOR);
+  }
+
+  function isTurnHidden(turn) {
+    if (!turn) return false;
+    const container = getTurnItemContainer(turn);
+    return [turn, container].some((el) =>
+      !!el && (el.classList?.contains("turbogpt-dom-hidden") || el.style?.display === "none")
+    );
+  }
+
+  function isTurnVisible(turn) {
+    if (!turn || isTurnHidden(turn)) return false;
+    const container = getTurnItemContainer(turn);
+    return ![turn, container].some((el) =>
+      !!el?.parentElement && (el.parentElement.classList?.contains("turbogpt-dom-hidden") || el.parentElement.style?.display === "none")
+    );
+  }
+
+  function getFirstVisibleConversationTurn() {
+    const turns = getAllConversationTurns();
+    return turns.find(isTurnVisible) || turns[0] || null;
+  }
+
+  function countHiddenUserTurns() {
+    return getAllConversationTurns().filter((turn) => isUserTurn(turn) && isTurnHidden(turn)).length;
+  }
+
   function countDomUserTurns() {
+    if (typeof getAllConversationTurns === "function" && typeof isUserTurn === "function") {
+      return getAllConversationTurns().filter(isUserTurn).length;
+    }
     return document.querySelectorAll('[data-message-author-role="user"]').length;
   }
 
@@ -152,7 +231,9 @@
           stats = {
             chars: text.length,
             words: trimmed ? trimmed.split(/\s+/).length : 0,
-            isUser: !!(t.querySelector('[data-message-author-role="user"]') || t.getAttribute('data-message-author-role') === 'user')
+            isUser: typeof isUserTurn === "function"
+              ? isUserTurn(t)
+              : !!(t.querySelector('[data-message-author-role="user"]') || t.getAttribute('data-message-author-role') === 'user')
           };
           try { cache.set(t, stats); } catch {}
         }
@@ -420,7 +501,7 @@
     if (request.type === "getStats") {
       // Temporary chats have no server-side history to page through: report
       // what is known locally, explicitly labelled as such.
-      const hiddenUserTurns = document.querySelectorAll('.turbogpt-dom-hidden [data-message-author-role="user"], .turbogpt-dom-hidden[data-message-author-role="user"]').length;
+      const hiddenUserTurns = countHiddenUserTurns();
 
       if (isTemporaryChat()) {
         const localTurns = countDomUserTurns();
@@ -1498,6 +1579,13 @@
   let cachedScrollContainer = null;
 
   function findChatScrollContainer() {
+    // New ChatGPT app renderer: the conversation root lives inside a
+    // thread-scroll-container.  Check it before the generic overflow-y-auto
+    // fallback, which otherwise tends to select the sidebar scroll area.
+    const appScroll = document.querySelector('[class*="thread-scroll-container"]') ||
+                      document.querySelector('[data-thread-find-target="conversation"]')?.closest('[class*="overflow-y-auto"]');
+    if (appScroll) return { el: appScroll, cacheable: true };
+
     const modernRoot = document.querySelector('[class*="group/scroll-root"]') ||
                        document.querySelector('.group\\/scroll-root') ||
                        document.querySelector('main [class*="react-scroll-to-bottom"]') ||
@@ -1569,6 +1657,9 @@
   }
 
   function getAllConversationTurns() {
+    const appTurns = Array.from(document.querySelectorAll(CHATGPT_APP_TURN_SELECTOR));
+    if (appTurns.length > 0) return appTurns;
+
     let turns = Array.from(document.querySelectorAll('[data-testid^="conversation-turn"]'));
     if (turns.length > 0) return turns;
 
@@ -1629,7 +1720,7 @@
 
     const userTurns = [];
     turns.forEach((turn, idx) => {
-      if (turn.querySelector('[data-message-author-role="user"]') || turn.getAttribute('data-message-author-role') === 'user') {
+      if (isUserTurn(turn)) {
         userTurns.push(idx);
       }
     });
@@ -1755,7 +1846,7 @@
       return;
     }
 
-    const hiddenUserTurnsCount = document.querySelectorAll('.turbogpt-dom-hidden [data-message-author-role="user"], .turbogpt-dom-hidden[data-message-author-role="user"]').length;
+    const hiddenUserTurnsCount = countHiddenUserTurns();
     const hiddenTurns =
       hiddenUserTurnsCount > 0
         ? hiddenUserTurnsCount
@@ -1798,7 +1889,7 @@
       <button class="turbogpt-pill-all" id="turbogpt-load-all-action">Load All</button>
     `;
 
-    const firstVisibleTurn = chatContainer.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)') ||
+    const firstVisibleTurn = getFirstVisibleConversationTurn() ||
                              chatContainer.querySelector('[data-testid^="conversation-turn-"]') ||
                              chatContainer.firstElementChild;
     const targetTurn = firstVisibleTurn ? getTurnItemContainer(firstVisibleTurn) : null;
@@ -1858,7 +1949,7 @@
     loader.style.opacity = "1";
     loader.style.transform = "translateY(0)";
     const chatContainer = getChatScrollContainer();
-    const firstVisible = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)') ||
+    const firstVisible = getFirstVisibleConversationTurn() ||
                          (chatContainer ? chatContainer.querySelector('[data-testid^="conversation-turn-"]') : null) ||
                          (chatContainer ? chatContainer.firstElementChild : null);
     const target = firstVisible ? getTurnItemContainer(firstVisible) : null;
@@ -1891,7 +1982,7 @@
       }
 
       const chatContainer = getChatScrollContainer();
-      const anchor = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)');
+      const anchor = getFirstVisibleConversationTurn();
       const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
 
       const performUnhide = () => {
@@ -1986,7 +2077,7 @@
 
     // Sentinel for intersection observation
     if (chatContainer) {
-      const firstVisible = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)') ||
+      const firstVisible = getFirstVisibleConversationTurn() ||
                            chatContainer.querySelector('[data-testid^="conversation-turn-"]') ||
                            chatContainer.firstElementChild;
       if (firstVisible) {
@@ -2203,7 +2294,10 @@
     const share = findShareButton();
 
     // Nothing to export yet (empty/new chat) - stay out of the way.
-    if (!document.querySelector('[data-message-author-role="user"]')) return;
+    const hasUserMessages = typeof countDomUserTurns === "function"
+      ? countDomUserTurns() > 0
+      : !!document.querySelector('[data-message-author-role="user"]');
+    if (!hasUserMessages) return;
 
     const btn = buildTopbarExportButton();
 
@@ -2223,7 +2317,7 @@
   function stashScrollPosition() {
     try {
       const scrollEl = getChatScrollContainer();
-      const firstVis = document.querySelector('[data-testid^="conversation-turn-"]:not(.turbogpt-dom-hidden), article:not(.turbogpt-dom-hidden)');
+      const firstVis = getFirstVisibleConversationTurn();
       const firstVisId = firstVis?.getAttribute("data-testid") || firstVis?.id || null;
       sessionStorage.setItem(SCROLL_RESTORE_KEY, JSON.stringify({
         url: window.location.href,
@@ -2277,11 +2371,8 @@
       return;
     }
 
-    const allUser = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
-    const visibleUser = allUser.filter((el) => {
-      const turn = el.closest('[data-testid^="conversation-turn"]') || el.closest('.turbogpt-dom-hidden') || el;
-      return !turn.classList.contains("turbogpt-dom-hidden") && turn.style.display !== "none" && (!turn.parentElement || turn.parentElement.style.display !== "none");
-    });
+    const allUser = getUserMessageElements();
+    const visibleUser = allUser.filter((el) => isTurnVisible(getTurnForMessageElement(el)));
     const userCount = visibleUser.length < allUser.length ? `${visibleUser.length}` : `${allUser.length}`;
     const ctxUsage = computeContextUsage();
     const ctxSignature = ctxUsage ? `${ctxUsage.contextUsedPct}|${ctxUsage.contextStatus}` : "none";
@@ -2362,11 +2453,8 @@
   function updateOutlineBadge() {
     const badge = document.querySelector(".turbogpt-dock-badge");
     if (badge) {
-      const allUser = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
-      const visibleUser = allUser.filter((el) => {
-        const turn = el.closest('[data-testid^="conversation-turn"]') || el.closest('.turbogpt-dom-hidden') || el;
-        return !turn.classList.contains("turbogpt-dom-hidden") && turn.style.display !== "none" && (!turn.parentElement || turn.parentElement.style.display !== "none");
-      });
+      const allUser = getUserMessageElements();
+      const visibleUser = allUser.filter((el) => isTurnVisible(getTurnForMessageElement(el)));
       badge.textContent = visibleUser.length < allUser.length ? `${visibleUser.length}` : `${allUser.length}`;
       badge.title = `${visibleUser.length} visible of ${allUser.length} questions`;
     }
@@ -2402,7 +2490,7 @@
       showTurnEl(curr);
       curr = curr.parentElement;
     }
-    const parentTurn = el.closest('[data-testid^="conversation-turn-"]') || el;
+    const parentTurn = getTurnForMessageElement(el) || el;
     showTurnEl(parentTurn);
     if (parentTurn.parentElement) showTurnEl(parentTurn.parentElement);
 
@@ -2426,11 +2514,8 @@
     const bookmarksKey = convId ? BOOKMARKS_PREFIX + convId : null;
     const bookmarks = bookmarksKey ? safeJsonParse(localStorage.getItem(bookmarksKey), []) : [];
 
-    const userTurns = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
-    const visibleTurns = userTurns.filter((el) => {
-      const turn = el.closest('[data-testid^="conversation-turn"]') || el.closest('.turbogpt-dom-hidden') || el;
-      return !turn.classList.contains("turbogpt-dom-hidden") && turn.style.display !== "none" && (!turn.parentElement || turn.parentElement.style.display !== "none");
-    });
+    const userTurns = getUserMessageElements();
+    const visibleTurns = userTurns.filter((el) => isTurnVisible(getTurnForMessageElement(el)));
     const tabLabel = visibleTurns.length < userTurns.length
       ? `Questions (${visibleTurns.length}/${userTurns.length})`
       : `Questions (${userTurns.length})`;
@@ -2485,11 +2570,8 @@
         listEl.innerHTML = `<div style="text-align:center;padding:20px;color:#94a3b8;font-size:12px;">No questions loaded yet</div>`;
       } else {
         userTurns.forEach((turn, idx) => {
-          const turnWrapper = turn.closest('[data-testid^="conversation-turn-"]') || turn.closest('.turbogpt-dom-hidden') || turn;
-          const isHidden = turnWrapper.classList.contains("turbogpt-dom-hidden") ||
-                           turnWrapper.style.display === "none" ||
-                           (turnWrapper.parentElement && turnWrapper.parentElement.classList.contains("turbogpt-dom-hidden")) ||
-                           (turnWrapper.parentElement && turnWrapper.parentElement.style.display === "none");
+          const turnWrapper = getTurnForMessageElement(turn) || turn;
+          const isHidden = !isTurnVisible(turnWrapper);
 
           const text = turn.textContent.trim().slice(0, 75) || "[Prompt]";
           const item = document.createElement("div");
@@ -2661,7 +2743,7 @@
   function injectBookmarkButtons() {
     if (!appSettings.enabled || appSettings.enableBookmarks === false) return;
 
-    const assistantTurns = document.querySelectorAll('[data-message-author-role="assistant"]');
+    const assistantTurns = getAssistantMessageElements();
     const convId = getConversationId();
     if (!convId) return;
 
@@ -3348,12 +3430,12 @@
   }
 
   function extractConversationContent() {
-    const turns = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"]'));
+    const turns = getAllConversationTurns();
     const messages = [];
 
     turns.forEach((turn) => {
-      const userEl = turn.querySelector('[data-message-author-role="user"]');
-      const astEl = turn.querySelector('[data-message-author-role="assistant"]');
+      const userEl = turn.matches?.(USER_MESSAGE_SELECTOR) ? turn : turn.querySelector?.(USER_MESSAGE_SELECTOR);
+      const astEl = turn.matches?.(ASSISTANT_MESSAGE_SELECTOR) ? turn : turn.querySelector?.(ASSISTANT_MESSAGE_SELECTOR);
 
       if (userEl) messages.push(messageFromElement(userEl, "User"));
       if (astEl) messages.push(messageFromElement(astEl, "ChatGPT"));

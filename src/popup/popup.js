@@ -384,17 +384,16 @@
 
     if (refreshBtn) {
       refreshBtn.addEventListener("click", () => {
+        const settings = getCurrentSettings();
+        chrome.storage.local.set({ [SETTINGS_KEY]: settings });
+        syncTabSettings(settings);
+        initialSettings = settings;
+        if (saveBar) saveBar.classList.add("hidden");
         refreshBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Saved & Applied!';
         refreshBtn.disabled = true;
         setTimeout(() => {
-          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            const t = tabs[0];
-            if (t?.id) {
-              chrome.tabs.reload(t.id);
-              window.close();
-            }
-          });
-        }, 800);
+          window.close();
+        }, 500);
       });
     }
 
