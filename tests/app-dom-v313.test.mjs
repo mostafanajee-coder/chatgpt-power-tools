@@ -88,14 +88,17 @@ const ctx = {
   manuallyUnhiddenTurnsCount: 0,
   initialEnforcementDone: false,
   domHiddenCountCache: null,
+  syncAppVirtualizerRails() {},
   updateOutlineBadge() {}
 };
 
 vm.createContext(ctx);
 vm.runInContext([
   grab("isUserTurn"),
+  grab("isAppTurn"),
   grab("getAllConversationTurns"),
   grab("getTurnItemContainer"),
+  "function detachAppTurn(turn) { turn.classList.add('turbogpt-dom-hidden'); return true; }",
   grab("invalidateHiddenCount"),
   grab("getDomHiddenCount"),
   grab("hideTurnEl"),
@@ -113,6 +116,19 @@ const hiddenCount = turns.filter((t) => t.classList.contains("turbogpt-dom-hidde
 check("Visible Messages = 1: hides the four older app turns", hiddenCount === 4, `hidden=${hiddenCount}`);
 check("Visible Messages = 1: keeps only the newest app turn visible",
   turns[4].classList.contains("turbogpt-dom-hidden") === false);
+
+check("windowed DOM: older app turns use serialized spacers",
+  src.includes("const detachedAppTurns = new Map();") &&
+  src.includes("data-turbogpt-window-spacer") &&
+  src.includes("container.replaceWith(spacer);"));
+check("windowed DOM: virtualizer rail is resynchronized after materialization",
+  src.includes("function syncAppVirtualizerRails()") &&
+  src.includes("content.scrollHeight") &&
+  src.includes("restoreOlderAppWindow(batchSize)"));
+check("local archive: live capture supports the current app message markers",
+  src.includes("[data-turn-key] img") &&
+  src.includes("getMessageIdFromElement(el)") &&
+  src.includes("turn.matches?.(USER_MESSAGE_SELECTOR)"));
 
 check("source keeps the new ChatGPT selectors centralized",
   src.includes("const CHATGPT_APP_TURN_SELECTOR = '[data-turn-key]';") &&

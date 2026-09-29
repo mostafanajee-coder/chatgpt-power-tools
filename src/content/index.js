@@ -137,6 +137,13 @@
            el;
   }
 
+  function isAppTurn(turn) {
+    return !!turn && (
+      turn.matches?.(CHATGPT_APP_TURN_SELECTOR) ||
+      turn.getAttribute?.("data-turn-key") != null
+    );
+  }
+
   function getMessageElements(selector) {
     const out = [];
     for (const turn of getAllConversationTurns()) {
@@ -152,6 +159,16 @@
 
   function getAssistantMessageElements() {
     return getMessageElements(ASSISTANT_MESSAGE_SELECTOR);
+  }
+
+  function getMessageIdFromElement(el) {
+    if (!el) return null;
+    const direct = el.getAttribute?.("data-message-id");
+    if (direct) return direct;
+    const host = el.closest?.("[data-chatgpt-search-message-ids]");
+    const ids = host?.getAttribute?.("data-chatgpt-search-message-ids");
+    if (ids) return ids.trim().split(/\s+/)[0] || null;
+    return el.closest?.("[data-turn-key]")?.getAttribute?.("data-turn-key") || null;
   }
 
   function isTurnHidden(turn) {
@@ -383,6 +400,7 @@
             localStorage.removeItem(EXTRA_KEY);
           } catch {}
           manuallyUnhiddenTurnsCount = 0;
+          restoreDetachedTurnsForLimit();
           resetRenderCaches();
           renderAllTools();
           enforceDomTurnLimit({ force: true });
@@ -585,6 +603,7 @@
       } catch {}
       manuallyUnhiddenTurnsCount = 0;
       initialEnforcementDone = false;
+      restoreDetachedTurnsForLimit();
       resetRenderCaches();
       renderAllTools();
       enforceDomTurnLimit({ force: true });
@@ -842,6 +861,14 @@
       /* Hidden turns by limit enforcer */
       .turbogpt-dom-hidden {
         display: none !important;
+      }
+      .turbogpt-dom-spacer {
+        display: none !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: hidden !important;
       }
 
       /* In-Chat Search Bar & Full History Panel */
@@ -1637,13 +1664,14 @@
   // Class/style writes only when the state actually changes: unconditional
   // writes on every tick invalidated style for every turn, even idle ones.
   function hideTurnEl(el) {
-    if (!el || el.classList.contains("turbogpt-dom-hidden")) return;
+    if (!el || el.classList.contains("turbogpt-dom-hidden")) return false;
     el.classList.add("turbogpt-dom-hidden");
     el.style.setProperty("display", "none", "important");
     invalidateHiddenCount();
+    return true;
   }
   function showTurnEl(el) {
-    if (!el) return;
+    if (!el) return false;
     let changed = false;
     if (el.classList.contains("turbogpt-dom-hidden")) {
       el.classList.remove("turbogpt-dom-hidden");
@@ -1654,6 +1682,7 @@
       changed = true;
     }
     if (changed) invalidateHiddenCount();
+    return changed;
   }
 
   function getAllConversationTurns() {
@@ -1680,10 +1709,159 @@
   }
 
   function getTurnItemContainer(turn) {
+    // In ChatGPT's current app renderer each turn sits inside a tiny wrapper
+    // (usually height ~= 1px) inside a fixed-height virtualizer rail. Hiding
+    // only the data-turn-key node leaves that wrapper and the rail's reserved
+    // height behind, which becomes the black gap between messages.
+    if (isAppTurn(turn)) {
+      const wrapper = turn.parentElement;
+      if (wrapper && wrapper.parentElement?.classList?.contains("flex") && wrapper.style?.height) {
+        return wrapper;
+      }
+    }
     if (turn.parentElement && turn.parentElement.parentElement?.classList?.contains("qMYqUG_convSearchResultHighlightRoot")) {
       return turn.parentElement;
     }
     return turn;
+  }
+
+  // Detached app turns are kept as serialized DOM only until the user asks
+  // to read them again. The full message data remains in the local archive;
+  // this map is a short-lived view cache, not the export source of truth.
+  const detachedAppTurns = new Map();
+
+  function makeAppWindowSpacer(key) {
+    const spacer = markOwned(document.createElement("div"));
+    spacer.className = "turbogpt-dom-spacer";
+    spacer.setAttribute("data-turbogpt-window-spacer", key);
+    spacer.setAttribute("aria-hidden", "true");
+    return spacer;
+  }
+
+  function detachAppTurn(turn) {
+    if (!isAppTurn(turn)) return false;
+    const key = turn.getAttribute("data-turn-key");
+    const container = getTurnItemContainer(turn);
+    if (!key || !container?.parentNode) return false;
+    if (detachedAppTurns.has(key)) return false;
+
+    // Clear stale state from earlier versions before serializing the view.
+    showTurnEl(turn);
+    if (container !== turn) showTurnEl(container);
+    const html = container.outerHTML;
+    if (!html) return false;
+
+    const spacer = makeAppWindowSpacer(key);
+    detachedAppTurns.set(key, { html });
+    container.replaceWith(spacer);
+    invalidateHiddenCount();
+    return true;
+  }
+
+  function restoreDetachedSpacer(spacer) {
+    const key = spacer?.getAttribute?.("data-turbogpt-window-spacer");
+    const record = key ? detachedAppTurns.get(key) : null;
+    if (!record) return false;
+
+    const template = document.createElement("template");
+    template.innerHTML = record.html;
+    const wrapper = template.content.firstElementChild;
+    if (!wrapper) return false;
+    spacer.replaceWith(wrapper);
+    detachedAppTurns.delete(key);
+    invalidateHiddenCount();
+    return true;
+  }
+
+  function restoreOlderAppWindow(count) {
+    if (!detachedAppTurns.size) return 0;
+    const firstVisible = getFirstVisibleConversationTurn();
+    const target = firstVisible ? getTurnItemContainer(firstVisible) : null;
+    if (!target?.parentNode) return 0;
+
+    const candidates = [];
+    let cursor = target.previousElementSibling;
+    while (cursor && candidates.length < count) {
+      if (cursor.id === "turbogpt-scroll-sentinel") {
+        cursor = cursor.previousElementSibling;
+        continue;
+      }
+      if (cursor.hasAttribute?.("data-turbogpt-window-spacer")) {
+        candidates.unshift(cursor);
+      }
+      cursor = cursor.previousElementSibling;
+    }
+
+    let restored = 0;
+    for (const spacer of candidates) {
+      if (restoreDetachedSpacer(spacer)) restored++;
+    }
+    if (restored) syncAppVirtualizerRails();
+    return restored;
+  }
+
+  function restoreAllDetachedAppTurns() {
+    let restored = 0;
+    document.querySelectorAll("[data-turbogpt-window-spacer]").forEach((spacer) => {
+      if (restoreDetachedSpacer(spacer)) restored++;
+    });
+    if (restored) syncAppVirtualizerRails();
+    return restored;
+  }
+
+  function restoreDetachedTurnsForLimit() {
+    if (!detachedAppTurns.size) return 0;
+    const target = Math.max(
+      1,
+      (appSettings.messageLimit || 15) + (appSettings.liveAutoTrim ? 0 : manuallyUnhiddenTurnsCount)
+    );
+    const needed = Math.max(0, target - countDomUserTurns());
+    return needed ? restoreOlderAppWindow(needed) : 0;
+  }
+
+  function findAppVirtualizerRail(turn) {
+    if (!isAppTurn(turn)) return null;
+    let current = turn.parentElement;
+    while (current && current !== document.body && current !== document.documentElement) {
+      if (current.classList?.contains("relative") &&
+          current.classList?.contains("shrink-0") &&
+          current.style?.height) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function syncAppVirtualizerRails() {
+    const rails = new Set();
+    for (const turn of getAllConversationTurns()) {
+      const rail = findAppVirtualizerRail(turn);
+      if (rail) rails.add(rail);
+    }
+    if (!rails.size) return;
+
+    const scrollEl = getChatScrollContainer();
+    const anchor = getFirstVisibleConversationTurn();
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : null;
+
+    for (const rail of rails) {
+      const content = rail.firstElementChild;
+      if (!content) continue;
+      const naturalHeight = content.scrollHeight;
+      if (!Number.isFinite(naturalHeight) || naturalHeight <= 0) continue;
+      const nextHeight = String(Math.ceil(naturalHeight * 10) / 10) + "px";
+      if (rail.style.height !== nextHeight) rail.style.height = nextHeight;
+    }
+
+    // Keep the currently readable turn at the same viewport position after
+    // the fixed virtualizer rail collapses or expands.
+    if (anchor && scrollEl && anchorTop != null) {
+      const diff = anchor.getBoundingClientRect().top - anchorTop;
+      if (Math.abs(diff) > 1) {
+        scrollEl.scrollBy({ top: diff, behavior: "instant" });
+      }
+    }
   }
 
   // Active DOM Turn Enforcer:
@@ -1701,12 +1879,18 @@
     }
 
     if (!appSettings.enabled) {
+      let changed = restoreAllDetachedAppTurns() > 0;
       if (getDomHiddenCount() > 0) {
-        document.querySelectorAll(".turbogpt-dom-hidden").forEach(showTurnEl);
+        document.querySelectorAll(".turbogpt-dom-hidden").forEach((el) => {
+          changed = showTurnEl(el) || changed;
+        });
         const root = document.querySelector(".qMYqUG_convSearchResultHighlightRoot");
-        if (root) Array.from(root.children).forEach(showTurnEl);
+        if (root) Array.from(root.children).forEach((el) => {
+          changed = showTurnEl(el) || changed;
+        });
         invalidateHiddenCount();
       }
+      if (changed) syncAppVirtualizerRails();
       updateOutlineBadge();
       return;
     }
@@ -1741,14 +1925,22 @@
     }
 
     if (cutoffIdx > 0) {
+      let changed = false;
       turns.forEach((turn, idx) => {
         const container = getTurnItemContainer(turn);
         if (idx < cutoffIdx) {
-          hideTurnEl(turn);
-          if (container !== turn) hideTurnEl(container);
+          if (isAppTurn(turn)) {
+            // Remove the old turn from the live DOM. The archive remains the
+            // source of truth; a zero-height spacer preserves the position
+            // until the user scrolls up and materializes that range again.
+            changed = detachAppTurn(turn) || changed;
+          } else {
+            changed = hideTurnEl(turn) || changed;
+            if (container !== turn) changed = hideTurnEl(container) || changed;
+          }
         } else {
-          showTurnEl(turn);
-          if (container !== turn) showTurnEl(container);
+          changed = showTurnEl(turn) || changed;
+          if (container !== turn) changed = showTurnEl(container) || changed;
         }
       });
 
@@ -1772,14 +1964,19 @@
           });
         }
       }
-    } else if (getDomHiddenCount() > 0) {
+      if (changed) syncAppVirtualizerRails();
+    } else if (getDomHiddenCount() > 0 || detachedAppTurns.size > 0) {
+      let changed = false;
       turns.forEach((turn) => {
         const container = getTurnItemContainer(turn);
-        showTurnEl(turn);
-        if (container !== turn) showTurnEl(container);
+        changed = showTurnEl(turn) || changed;
+        if (container !== turn) changed = showTurnEl(container) || changed;
       });
       const root = document.querySelector(".qMYqUG_convSearchResultHighlightRoot");
-      if (root) Array.from(root.children).forEach(showTurnEl);
+      if (root) Array.from(root.children).forEach((el) => {
+        changed = showTurnEl(el) || changed;
+      });
+      if (changed) syncAppVirtualizerRails();
     }
     initialEnforcementDone = true;
     invalidateHiddenCount();
@@ -1792,6 +1989,7 @@
   function hasOlderTurnsToLoad() {
     const domHiddenTurns = getDomHiddenCount();
     if (domHiddenTurns > 0) return true;
+    if (detachedAppTurns.size > 0) return true;
 
     if (Number.isFinite(lastStatus.totalTurns) && Number.isFinite(lastStatus.visibleTurns)) {
       if (lastStatus.totalTurns > (lastStatus.visibleTurns + manuallyUnhiddenTurnsCount)) return true;
@@ -1822,7 +2020,8 @@
     // When Auto-Load on Scroll is active:
     // As long as turns are hidden in DOM, keep pill hidden so scroll-up handles it seamlessly.
     // If all DOM turns are unhidden and server has older turns, reveal pill for manual server-fetch.
-    if (!appSettings.enabled || appSettings.enableFloatingButton === false || (appSettings.enableAutoScrollLoad !== false && domHiddenTurns > 0)) {
+    if (!appSettings.enabled || appSettings.enableFloatingButton === false ||
+        (appSettings.enableAutoScrollLoad !== false && (domHiddenTurns > 0 || detachedAppTurns.size > 0))) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
       if (appSettings.enabled && appSettings.enableAutoScrollLoad !== false) {
@@ -1832,7 +2031,8 @@
     }
 
     // The conversation start has been reached: nothing older exists on server and no DOM turns hidden.
-    if (lastStatus.reachedConversationStart === true && !lastStatus.serverHasOlder && domHiddenTurns === 0) {
+    if (lastStatus.reachedConversationStart === true && !lastStatus.serverHasOlder &&
+        domHiddenTurns === 0 && detachedAppTurns.size === 0) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
       return;
@@ -1852,21 +2052,23 @@
         ? hiddenUserTurnsCount
         : (domHiddenTurns > 0
           ? Math.ceil(domHiddenTurns / 2)
-          : (lastStatus.countState === "complete" &&
-             Number.isFinite(lastStatus.totalTurns) &&
-             Number.isFinite(lastStatus.visibleTurns)
-              ? Math.max(0, lastStatus.totalTurns - lastStatus.visibleTurns)
-              : null));
+          : (detachedAppTurns.size > 0
+            ? detachedAppTurns.size
+            : (lastStatus.countState === "complete" &&
+               Number.isFinite(lastStatus.totalTurns) &&
+               Number.isFinite(lastStatus.visibleTurns)
+                ? Math.max(0, lastStatus.totalTurns - lastStatus.visibleTurns)
+                : null)));
 
     const batchSize = Math.max(1, appSettings.loadBatchSize || 5);
     const loadCount = hiddenTurns !== null ? Math.min(hiddenTurns, batchSize) : batchSize;
-    if (loadCount <= 0 && domHiddenTurns === 0) {
+    if (loadCount <= 0 && domHiddenTurns === 0 && detachedAppTurns.size === 0) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
       return;
     }
 
-    const signature = `${hiddenTurns}|${loadCount}|${olderExists}|${domHiddenTurns}|${lastStatus.countState}`;
+    const signature = `${hiddenTurns}|${loadCount}|${olderExists}|${domHiddenTurns}|${detachedAppTurns.size}|${lastStatus.countState}`;
     if (!force && existingPill && existingPill.dataset.sig === signature) return;
 
     if (existingPill) existingPill.remove();
@@ -1912,6 +2114,7 @@
 
     pill.querySelector("#turbogpt-load-all-action").addEventListener("click", () => {
       manuallyUnhiddenTurnsCount = 99999;
+      restoreAllDetachedAppTurns();
       enforceDomTurnLimit({ force: true });
       renderFloatingLoadButton(true);
       removeAutoScrollLoader();
@@ -1974,6 +2177,32 @@
   function unhideOlderBatch(options = {}) {
     if (isAutoLoadingBatch) return false;
     const batchSize = Math.max(1, appSettings.loadBatchSize || 5);
+
+    if (detachedAppTurns.size > 0) {
+      isAutoLoadingBatch = true;
+      if (options.fromScroll) showScrollLoader();
+      const chatContainer = getChatScrollContainer();
+      const anchor = getFirstVisibleConversationTurn();
+      const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
+      const restored = restoreOlderAppWindow(batchSize);
+      if (restored > 0) {
+        manuallyUnhiddenTurnsCount += restored;
+        enforceDomTurnLimit({ force: true });
+        renderFloatingLoadButton(true);
+        if (anchor && chatContainer) {
+          const diff = anchor.getBoundingClientRect().top - anchorTop;
+          if (Math.abs(diff) > 1) chatContainer.scrollBy({ top: diff, behavior: "instant" });
+        }
+        hideScrollLoader();
+        setTimeout(() => {
+          isAutoLoadingBatch = false;
+          setupAutoScrollLoader();
+        }, 250);
+        return true;
+      }
+      hideScrollLoader();
+      isAutoLoadingBatch = false;
+    }
 
     if (getDomHiddenCount() > 0) {
       isAutoLoadingBatch = true;
@@ -2099,7 +2328,9 @@
               const domHidden = getDomHiddenCount();
               const currentST = chatContainer ? chatContainer.scrollTop : getEffectiveScrollTop();
               const distanceFromBottom = chatContainer ? (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) : 0;
-              if (entry.isIntersecting && !isAutoLoadingBatch && domHidden > 0 && currentST <= 150 && distanceFromBottom > 100) {
+              if (entry.isIntersecting && !isAutoLoadingBatch &&
+                  (domHidden > 0 || detachedAppTurns.size > 0) &&
+                  currentST <= 150 && distanceFromBottom > 100) {
                 unhideOlderBatch({ fromScroll: true });
               }
             }
@@ -2159,7 +2390,7 @@
         lastScrollTopPos = currentST;
         if (isUp && currentST <= 150 && !isAutoLoadingBatch) {
           const domHidden = getDomHiddenCount();
-          if (domHidden > 0) {
+          if (domHidden > 0 || detachedAppTurns.size > 0) {
             unhideOlderBatch({ fromScroll: true });
           }
         }
@@ -2179,7 +2410,7 @@
       if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
       const st = getEffectiveScrollTop();
       const domHidden = getDomHiddenCount();
-      if (st <= 150 && domHidden > 0) {
+      if (st <= 150 && (domHidden > 0 || detachedAppTurns.size > 0)) {
         unhideOlderBatch({ fromScroll: true });
       }
     };
@@ -4066,7 +4297,7 @@
 
   function collectDomImages() {
     const out = [];
-    const imgs = document.querySelectorAll('[data-testid^="conversation-turn"] img, article img');
+    const imgs = document.querySelectorAll('[data-turn-key] img, [data-testid^="conversation-turn"] img, article img');
     imgs.forEach((img) => {
       if (img.closest(OWNED_SELECTOR)) return;
       // Not loaded yet (lazy or inside a hidden turn): picked up later, or
@@ -4078,15 +4309,20 @@
       if (!src || /^data:image\/svg/i.test(src)) return;
       const key = Archive.imageKeyForUrl(src);
       if (!key || archiveState.seenImages.has(key)) return;
-      const turn = img.closest('[data-testid^="conversation-turn"], article');
-      const holder = img.closest("[data-message-id]") || (turn ? turn.querySelector("[data-message-id]") : null);
-      const messageId = holder ? holder.getAttribute("data-message-id") : null;
+      const turn = getTurnForMessageElement(img);
+      const holder = img.closest("[data-message-id], [data-chatgpt-search-message-ids]") ||
+        (turn ? turn.querySelector("[data-message-id], [data-chatgpt-search-message-ids]") : null);
+      const messageId = getMessageIdFromElement(holder || turn);
       if (!messageId) return;
+      const roleNode = img.closest("[data-message-author-role], [data-content-search-unit-key], [data-user-message-bubble], [data-markdown-text-style]") || holder || turn;
+      const roleAttr = roleNode?.getAttribute?.("data-message-author-role") || "";
+      const searchKey = roleNode?.getAttribute?.("data-content-search-unit-key") || "";
+      const role = roleAttr || (/:user$/.test(searchKey) || roleNode?.matches?.("[data-user-message-bubble]") ? "user" : "assistant");
       out.push({
         key,
         src,
         messageId,
-        role: holder.getAttribute("data-message-author-role") || "assistant",
+        role,
         width: img.naturalWidth,
         height: img.naturalHeight
       });
@@ -4105,28 +4341,32 @@
     if (!convId || isTemporaryChat()) return Promise.resolve();
     if (isStreamingNow()) return Promise.resolve();
 
-    const els = Array.from(document.querySelectorAll("[data-message-id][data-message-author-role]"))
-      .filter((el) => !el.closest(OWNED_SELECTOR));
+    const els = [];
+    for (const turn of getAllConversationTurns()) {
+      const userEl = turn.matches?.(USER_MESSAGE_SELECTOR) ? turn : turn.querySelector?.(USER_MESSAGE_SELECTOR);
+      const astEl = turn.matches?.(ASSISTANT_MESSAGE_SELECTOR) ? turn : turn.querySelector?.(ASSISTANT_MESSAGE_SELECTOR);
+      if (userEl && !userEl.closest(OWNED_SELECTOR)) els.push({ el: userEl, role: "user" });
+      if (astEl && !astEl.closest(OWNED_SELECTOR)) els.push({ el: astEl, role: "assistant" });
+    }
     const start = opts.all ? 0 : Math.max(0, els.length - ARCHIVE_LIVE_WINDOW);
     const updates = [];
     const sameConv = archiveState.convId === convId;
     for (let i = start; i < els.length; i++) {
-      const el = els[i];
-      const roleAttr = el.getAttribute("data-message-author-role");
-      if (roleAttr !== "user" && roleAttr !== "assistant") continue;
-      const id = el.getAttribute("data-message-id");
+      const item = els[i];
+      const el = item.el;
+      const id = getMessageIdFromElement(el);
       if (!id) continue;
       // Cheap change detector: rebuilding markdown for unchanged messages on
       // every tick would be wasted work.
       const sig = (el.textContent || "").length;
       if (sameConv && archiveState.domSig.get(id) === sig) continue;
-      const msg = messageFromElement(el, roleAttr === "user" ? "User" : "ChatGPT");
+      const msg = messageFromElement(el, item.role === "user" ? "User" : "ChatGPT");
       if (!msg.text) continue;
       updates.push({
         sig,
         pos: {
-          prevId: i > 0 ? els[i - 1].getAttribute("data-message-id") : null,
-          nextId: i + 1 < els.length ? els[i + 1].getAttribute("data-message-id") : null
+          prevId: i > 0 ? getMessageIdFromElement(els[i - 1].el) : null,
+          nextId: i + 1 < els.length ? getMessageIdFromElement(els[i + 1].el) : null
         },
         message: { id, role: msg.role, text: msg.text, origin: "dom", capturedAt: Date.now(), images: [] }
       });
@@ -4373,6 +4613,7 @@
     lastHref = href;
     manuallyUnhiddenTurnsCount = 0;
     initialEnforcementDone = false;
+    detachedAppTurns.clear();
     cachedFullConvMessages = null;
     cachedFullConvId = null;
     cachedScrollContainer = null;
