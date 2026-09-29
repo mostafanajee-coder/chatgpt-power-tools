@@ -1,5 +1,5 @@
 // popupConstants.js - Local & Private
 window.PopupConstants = {
   APP_NAME: "TurboGPT – Chat Speed Booster & Exporter",
-  VERSION: "3.14.0"
+  VERSION: "3.14.1"
 };

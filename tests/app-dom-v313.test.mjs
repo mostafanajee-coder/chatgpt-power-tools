@@ -98,7 +98,7 @@ vm.runInContext([
   grab("isAppTurn"),
   grab("getAllConversationTurns"),
   grab("getTurnItemContainer"),
-  "function detachAppTurn(turn) { turn.classList.add('turbogpt-dom-hidden'); return true; }",
+  grab("hideAppTurn"),
   grab("invalidateHiddenCount"),
   grab("getDomHiddenCount"),
   grab("hideTurnEl"),
@@ -117,14 +117,14 @@ check("Visible Messages = 1: hides the four older app turns", hiddenCount === 4,
 check("Visible Messages = 1: keeps only the newest app turn visible",
   turns[4].classList.contains("turbogpt-dom-hidden") === false);
 
-check("windowed DOM: older app turns use serialized spacers",
-  src.includes("const detachedAppTurns = new Map();") &&
-  src.includes("data-turbogpt-window-spacer") &&
-  src.includes("container.replaceWith(spacer);"));
-check("windowed DOM: virtualizer rail is resynchronized after materialization",
+check("React-safe window: older app turns stay in React's DOM tree",
+  src.includes("function hideAppTurn(turn)") &&
+  src.includes("return hideTurnEl(container);") &&
+  !src.includes("container.replaceWith(spacer);"));
+check("React-safe window: virtualizer rail is resynchronized after hiding",
   src.includes("function syncAppVirtualizerRails()") &&
   src.includes("content.scrollHeight") &&
-  src.includes("restoreOlderAppWindow(batchSize)"));
+  src.includes("if (changed) syncAppVirtualizerRails();"));
 check("local archive: live capture supports the current app message markers",
   src.includes("[data-turn-key] img") &&
   src.includes("getMessageIdFromElement(el)") &&

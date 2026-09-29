@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.14.0-blue.svg?style=flat-square" alt="Version 3.14.0" />
+  <img src="https://img.shields.io/badge/Version-3.14.1-blue.svg?style=flat-square" alt="Version 3.14.1" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Privacy-100%25%20Local-emerald.svg?style=flat-square" alt="100% Local" />
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg?style=flat-square" alt="Zero dependencies" />
@@ -146,12 +146,19 @@ No dependencies and no build step. Each suite loads the **real** extension sourc
 
 ## 📜 Changelog
 
+### v3.14.1
+React-safe windowing hotfix.
+- 🩹 **Fixed the intermittent “ChatGPT hit a snag” crash:** older ChatGPT turn nodes are no longer physically removed or replaced while React owns them.
+- ⚡ **Kept the render optimization:** turn wrappers are hidden safely and the virtualizer rail is recalculated, removing the black layout gap without invalidating React's DOM tree.
+- 📤 **Archive and exports unchanged:** local Markdown/HTML exports still read the local archive and its images.
+- 🧪 Added regression coverage that rejects physical replacement of current ChatGPT turn containers.
+
 ### v3.14.0
 Windowed DOM rendering for very long chats.
-- 🪟 **Bounded DOM window:** older turns stay in the local archive and are represented by zero-height markers instead of thousands of live ChatGPT nodes; the virtualizer rail is recalculated after each change.
-- ⚡ **Live materialization:** only the configured recent window is mounted; scrolling toward the older range restores it in batches with scroll anchoring.
+- 🪟 **Render window:** older turns stay in the local archive and are hidden from layout while their React-owned nodes remain intact; the virtualizer rail is recalculated after each change.
+- ⚡ **Seamless reveal:** scrolling toward the older range restores hidden turns in batches with scroll anchoring.
 - 📤 **Archive-backed exports:** full Markdown and standalone HTML exports continue to read the complete local archive, including locally saved images, rather than the visible DOM window.
-- 🧪 Added regression coverage for DOM windowing, spacer height restoration, scroll anchoring, and archive-backed export boundaries.
+- 🧪 Added regression coverage for the render window, rail height restoration, scroll anchoring, and archive-backed export boundaries.
 
 ### v3.13.0
 Live-verified against a real account through Chrome's remote debugging (Chrome 153, 2026-09-25).

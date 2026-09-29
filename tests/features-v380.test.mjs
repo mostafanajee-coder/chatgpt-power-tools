@@ -366,7 +366,7 @@ check("Auto-Load on Scroll: zero-reload safeguard prevents automatic reload on s
   indexJsContent.includes("return false;"));
 
 check("Auto-Load on Scroll: gesture listeners guard against scroll loops when domHidden is 0",
-  indexJsContent.includes("st <= 150 && (domHidden > 0 || detachedAppTurns.size > 0)") &&
+  indexJsContent.includes("st <= 150 && domHidden > 0") &&
   indexJsContent.includes("currentST <= 150 && !isAutoLoadingBatch"));
 
 const mainWorldContent = fs.readFileSync("src/page/mainWorld.js", "utf8");

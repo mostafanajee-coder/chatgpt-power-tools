@@ -400,7 +400,6 @@
             localStorage.removeItem(EXTRA_KEY);
           } catch {}
           manuallyUnhiddenTurnsCount = 0;
-          restoreDetachedTurnsForLimit();
           resetRenderCaches();
           renderAllTools();
           enforceDomTurnLimit({ force: true });
@@ -603,7 +602,6 @@
       } catch {}
       manuallyUnhiddenTurnsCount = 0;
       initialEnforcementDone = false;
-      restoreDetachedTurnsForLimit();
       resetRenderCaches();
       renderAllTools();
       enforceDomTurnLimit({ force: true });
@@ -862,15 +860,6 @@
       .turbogpt-dom-hidden {
         display: none !important;
       }
-      .turbogpt-dom-spacer {
-        display: none !important;
-        height: 0 !important;
-        min-height: 0 !important;
-        margin: 0 !important;
-        padding: 0 !important;
-        overflow: hidden !important;
-      }
-
       /* In-Chat Search Bar & Full History Panel */
       .turbogpt-search-overlay {
         position: fixed;
@@ -1710,9 +1699,9 @@
 
   function getTurnItemContainer(turn) {
     // In ChatGPT's current app renderer each turn sits inside a tiny wrapper
-    // (usually height ~= 1px) inside a fixed-height virtualizer rail. Hiding
-    // only the data-turn-key node leaves that wrapper and the rail's reserved
-    // height behind, which becomes the black gap between messages.
+    // (usually height ~= 1px) inside a fixed-height virtualizer rail. Hide the
+    // wrapper, not just the data-turn-key node, so its layout contribution is
+    // removed before the rail is recalculated.
     if (isAppTurn(turn)) {
       const wrapper = turn.parentElement;
       if (wrapper && wrapper.parentElement?.classList?.contains("flex") && wrapper.style?.height) {
@@ -1725,98 +1714,15 @@
     return turn;
   }
 
-  // Detached app turns are kept as serialized DOM only until the user asks
-  // to read them again. The full message data remains in the local archive;
-  // this map is a short-lived view cache, not the export source of truth.
-  const detachedAppTurns = new Map();
-
-  function makeAppWindowSpacer(key) {
-    const spacer = markOwned(document.createElement("div"));
-    spacer.className = "turbogpt-dom-spacer";
-    spacer.setAttribute("data-turbogpt-window-spacer", key);
-    spacer.setAttribute("aria-hidden", "true");
-    return spacer;
-  }
-
-  function detachAppTurn(turn) {
+  // React owns the current app renderer's turn nodes. Never remove or replace
+  // them: React may still hold the original sibling references and will throw
+  // NotFoundError during its next commit if one disappears underneath it.
+  // Hiding the wrapper keeps React's tree intact while the rail recalculation
+  // below removes the black layout gap.
+  function hideAppTurn(turn) {
     if (!isAppTurn(turn)) return false;
-    const key = turn.getAttribute("data-turn-key");
     const container = getTurnItemContainer(turn);
-    if (!key || !container?.parentNode) return false;
-    if (detachedAppTurns.has(key)) return false;
-
-    // Clear stale state from earlier versions before serializing the view.
-    showTurnEl(turn);
-    if (container !== turn) showTurnEl(container);
-    const html = container.outerHTML;
-    if (!html) return false;
-
-    const spacer = makeAppWindowSpacer(key);
-    detachedAppTurns.set(key, { html });
-    container.replaceWith(spacer);
-    invalidateHiddenCount();
-    return true;
-  }
-
-  function restoreDetachedSpacer(spacer) {
-    const key = spacer?.getAttribute?.("data-turbogpt-window-spacer");
-    const record = key ? detachedAppTurns.get(key) : null;
-    if (!record) return false;
-
-    const template = document.createElement("template");
-    template.innerHTML = record.html;
-    const wrapper = template.content.firstElementChild;
-    if (!wrapper) return false;
-    spacer.replaceWith(wrapper);
-    detachedAppTurns.delete(key);
-    invalidateHiddenCount();
-    return true;
-  }
-
-  function restoreOlderAppWindow(count) {
-    if (!detachedAppTurns.size) return 0;
-    const firstVisible = getFirstVisibleConversationTurn();
-    const target = firstVisible ? getTurnItemContainer(firstVisible) : null;
-    if (!target?.parentNode) return 0;
-
-    const candidates = [];
-    let cursor = target.previousElementSibling;
-    while (cursor && candidates.length < count) {
-      if (cursor.id === "turbogpt-scroll-sentinel") {
-        cursor = cursor.previousElementSibling;
-        continue;
-      }
-      if (cursor.hasAttribute?.("data-turbogpt-window-spacer")) {
-        candidates.unshift(cursor);
-      }
-      cursor = cursor.previousElementSibling;
-    }
-
-    let restored = 0;
-    for (const spacer of candidates) {
-      if (restoreDetachedSpacer(spacer)) restored++;
-    }
-    if (restored) syncAppVirtualizerRails();
-    return restored;
-  }
-
-  function restoreAllDetachedAppTurns() {
-    let restored = 0;
-    document.querySelectorAll("[data-turbogpt-window-spacer]").forEach((spacer) => {
-      if (restoreDetachedSpacer(spacer)) restored++;
-    });
-    if (restored) syncAppVirtualizerRails();
-    return restored;
-  }
-
-  function restoreDetachedTurnsForLimit() {
-    if (!detachedAppTurns.size) return 0;
-    const target = Math.max(
-      1,
-      (appSettings.messageLimit || 15) + (appSettings.liveAutoTrim ? 0 : manuallyUnhiddenTurnsCount)
-    );
-    const needed = Math.max(0, target - countDomUserTurns());
-    return needed ? restoreOlderAppWindow(needed) : 0;
+    return hideTurnEl(container);
   }
 
   function findAppVirtualizerRail(turn) {
@@ -1879,7 +1785,7 @@
     }
 
     if (!appSettings.enabled) {
-      let changed = restoreAllDetachedAppTurns() > 0;
+      let changed = false;
       if (getDomHiddenCount() > 0) {
         document.querySelectorAll(".turbogpt-dom-hidden").forEach((el) => {
           changed = showTurnEl(el) || changed;
@@ -1930,10 +1836,9 @@
         const container = getTurnItemContainer(turn);
         if (idx < cutoffIdx) {
           if (isAppTurn(turn)) {
-            // Remove the old turn from the live DOM. The archive remains the
-            // source of truth; a zero-height spacer preserves the position
-            // until the user scrolls up and materializes that range again.
-            changed = detachAppTurn(turn) || changed;
+            // Keep React's managed nodes in place. Hiding their wrapper gives
+            // us the render window without invalidating React's fiber tree.
+            changed = hideAppTurn(turn) || changed;
           } else {
             changed = hideTurnEl(turn) || changed;
             if (container !== turn) changed = hideTurnEl(container) || changed;
@@ -1965,7 +1870,7 @@
         }
       }
       if (changed) syncAppVirtualizerRails();
-    } else if (getDomHiddenCount() > 0 || detachedAppTurns.size > 0) {
+    } else if (getDomHiddenCount() > 0) {
       let changed = false;
       turns.forEach((turn) => {
         const container = getTurnItemContainer(turn);
@@ -1989,7 +1894,6 @@
   function hasOlderTurnsToLoad() {
     const domHiddenTurns = getDomHiddenCount();
     if (domHiddenTurns > 0) return true;
-    if (detachedAppTurns.size > 0) return true;
 
     if (Number.isFinite(lastStatus.totalTurns) && Number.isFinite(lastStatus.visibleTurns)) {
       if (lastStatus.totalTurns > (lastStatus.visibleTurns + manuallyUnhiddenTurnsCount)) return true;
@@ -2021,7 +1925,7 @@
     // As long as turns are hidden in DOM, keep pill hidden so scroll-up handles it seamlessly.
     // If all DOM turns are unhidden and server has older turns, reveal pill for manual server-fetch.
     if (!appSettings.enabled || appSettings.enableFloatingButton === false ||
-        (appSettings.enableAutoScrollLoad !== false && (domHiddenTurns > 0 || detachedAppTurns.size > 0))) {
+        (appSettings.enableAutoScrollLoad !== false && domHiddenTurns > 0)) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
       if (appSettings.enabled && appSettings.enableAutoScrollLoad !== false) {
@@ -2032,7 +1936,7 @@
 
     // The conversation start has been reached: nothing older exists on server and no DOM turns hidden.
     if (lastStatus.reachedConversationStart === true && !lastStatus.serverHasOlder &&
-        domHiddenTurns === 0 && detachedAppTurns.size === 0) {
+        domHiddenTurns === 0) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
       return;
@@ -2052,23 +1956,21 @@
         ? hiddenUserTurnsCount
         : (domHiddenTurns > 0
           ? Math.ceil(domHiddenTurns / 2)
-          : (detachedAppTurns.size > 0
-            ? detachedAppTurns.size
-            : (lastStatus.countState === "complete" &&
-               Number.isFinite(lastStatus.totalTurns) &&
-               Number.isFinite(lastStatus.visibleTurns)
-                ? Math.max(0, lastStatus.totalTurns - lastStatus.visibleTurns)
-                : null)));
+          : (lastStatus.countState === "complete" &&
+             Number.isFinite(lastStatus.totalTurns) &&
+             Number.isFinite(lastStatus.visibleTurns)
+              ? Math.max(0, lastStatus.totalTurns - lastStatus.visibleTurns)
+              : null));
 
     const batchSize = Math.max(1, appSettings.loadBatchSize || 5);
     const loadCount = hiddenTurns !== null ? Math.min(hiddenTurns, batchSize) : batchSize;
-    if (loadCount <= 0 && domHiddenTurns === 0 && detachedAppTurns.size === 0) {
+    if (loadCount <= 0 && domHiddenTurns === 0) {
       if (existingPill) existingPill.remove();
       lastPillSignature = null;
       return;
     }
 
-    const signature = `${hiddenTurns}|${loadCount}|${olderExists}|${domHiddenTurns}|${detachedAppTurns.size}|${lastStatus.countState}`;
+    const signature = `${hiddenTurns}|${loadCount}|${olderExists}|${domHiddenTurns}|${lastStatus.countState}`;
     if (!force && existingPill && existingPill.dataset.sig === signature) return;
 
     if (existingPill) existingPill.remove();
@@ -2114,7 +2016,6 @@
 
     pill.querySelector("#turbogpt-load-all-action").addEventListener("click", () => {
       manuallyUnhiddenTurnsCount = 99999;
-      restoreAllDetachedAppTurns();
       enforceDomTurnLimit({ force: true });
       renderFloatingLoadButton(true);
       removeAutoScrollLoader();
@@ -2177,32 +2078,6 @@
   function unhideOlderBatch(options = {}) {
     if (isAutoLoadingBatch) return false;
     const batchSize = Math.max(1, appSettings.loadBatchSize || 5);
-
-    if (detachedAppTurns.size > 0) {
-      isAutoLoadingBatch = true;
-      if (options.fromScroll) showScrollLoader();
-      const chatContainer = getChatScrollContainer();
-      const anchor = getFirstVisibleConversationTurn();
-      const anchorTop = anchor ? anchor.getBoundingClientRect().top : 0;
-      const restored = restoreOlderAppWindow(batchSize);
-      if (restored > 0) {
-        manuallyUnhiddenTurnsCount += restored;
-        enforceDomTurnLimit({ force: true });
-        renderFloatingLoadButton(true);
-        if (anchor && chatContainer) {
-          const diff = anchor.getBoundingClientRect().top - anchorTop;
-          if (Math.abs(diff) > 1) chatContainer.scrollBy({ top: diff, behavior: "instant" });
-        }
-        hideScrollLoader();
-        setTimeout(() => {
-          isAutoLoadingBatch = false;
-          setupAutoScrollLoader();
-        }, 250);
-        return true;
-      }
-      hideScrollLoader();
-      isAutoLoadingBatch = false;
-    }
 
     if (getDomHiddenCount() > 0) {
       isAutoLoadingBatch = true;
@@ -2328,8 +2203,8 @@
               const domHidden = getDomHiddenCount();
               const currentST = chatContainer ? chatContainer.scrollTop : getEffectiveScrollTop();
               const distanceFromBottom = chatContainer ? (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) : 0;
-              if (entry.isIntersecting && !isAutoLoadingBatch &&
-                  (domHidden > 0 || detachedAppTurns.size > 0) &&
+                if (entry.isIntersecting && !isAutoLoadingBatch &&
+                  domHidden > 0 &&
                   currentST <= 150 && distanceFromBottom > 100) {
                 unhideOlderBatch({ fromScroll: true });
               }
@@ -2390,7 +2265,7 @@
         lastScrollTopPos = currentST;
         if (isUp && currentST <= 150 && !isAutoLoadingBatch) {
           const domHidden = getDomHiddenCount();
-          if (domHidden > 0 || detachedAppTurns.size > 0) {
+          if (domHidden > 0) {
             unhideOlderBatch({ fromScroll: true });
           }
         }
@@ -2410,7 +2285,7 @@
       if (!appSettings.enabled || appSettings.enableAutoScrollLoad === false || isAutoLoadingBatch) return;
       const st = getEffectiveScrollTop();
       const domHidden = getDomHiddenCount();
-      if (st <= 150 && (domHidden > 0 || detachedAppTurns.size > 0)) {
+      if (st <= 150 && domHidden > 0) {
         unhideOlderBatch({ fromScroll: true });
       }
     };
@@ -4613,7 +4488,6 @@
     lastHref = href;
     manuallyUnhiddenTurnsCount = 0;
     initialEnforcementDone = false;
-    detachedAppTurns.clear();
     cachedFullConvMessages = null;
     cachedFullConvId = null;
     cachedScrollContainer = null;
