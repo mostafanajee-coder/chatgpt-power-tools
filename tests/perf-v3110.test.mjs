@@ -124,7 +124,8 @@ check("no hot path still counts hidden turns with a live querySelectorAll",
 
 check("gesture handlers (wheel/touch/key) coalesce into one check per frame",
   contentSrc.includes("function scheduleGestureCheck()") &&
-  contentSrc.includes("if (e.deltaY < 0) scheduleGestureCheck();") &&
+  contentSrc.includes("if (e.deltaY < 0) {") &&
+  contentSrc.includes("markUserScrollIntent();") &&
   contentSrc.includes("requestAnimationFrame(run)"));
 
 check("wheel listener is registered once (window only, no duplicate on document)",

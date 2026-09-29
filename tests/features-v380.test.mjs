@@ -368,6 +368,11 @@ check("Auto-Load on Scroll: zero-reload safeguard prevents automatic reload on s
 check("Auto-Load on Scroll: gesture listeners guard against scroll loops when domHidden is 0",
   indexJsContent.includes("st <= 150 && domHidden > 0") &&
   indexJsContent.includes("currentST <= 150 && !isAutoLoadingBatch"));
+check("Auto-Load on Scroll: sentinel cannot start a load without a user gesture",
+  indexJsContent.includes("let userScrollIntent = false;") &&
+  indexJsContent.includes("userScrollIntent &&") &&
+  indexJsContent.includes("options.fromScroll && !consumeUserScrollIntent()") &&
+  indexJsContent.includes("if (isProgrammaticScroll()) return;"));
 
 const mainWorldContent = fs.readFileSync("src/page/mainWorld.js", "utf8");
 check("Auto-Load on Scroll: mainWorld buffers up to 50 turns when enableAutoScrollLoad is true",

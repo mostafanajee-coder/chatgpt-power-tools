@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.14.1-blue.svg?style=flat-square" alt="Version 3.14.1" />
+  <img src="https://img.shields.io/badge/Version-3.14.2-blue.svg?style=flat-square" alt="Version 3.14.2" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Privacy-100%25%20Local-emerald.svg?style=flat-square" alt="100% Local" />
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg?style=flat-square" alt="Zero dependencies" />
@@ -145,6 +145,12 @@ No dependencies and no build step. Each suite loads the **real** extension sourc
 ---
 
 ## 📜 Changelog
+
+### v3.14.2
+Auto-load loop hotfix.
+- 🛑 **Fixed the endless older-message loading loop:** the IntersectionObserver no longer treats its initial visibility as a user scroll.
+- 🖱️ Older turns now load only after an actual upward wheel, touch, scrollbar, or keyboard gesture.
+- 🧪 Added regression coverage for the user-gesture gate.
 
 ### v3.14.1
 React-safe windowing hotfix.

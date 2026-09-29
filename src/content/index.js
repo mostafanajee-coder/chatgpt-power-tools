@@ -1765,6 +1765,7 @@
     if (anchor && scrollEl && anchorTop != null) {
       const diff = anchor.getBoundingClientRect().top - anchorTop;
       if (Math.abs(diff) > 1) {
+        markProgrammaticScroll();
         scrollEl.scrollBy({ top: diff, behavior: "instant" });
       }
     }
@@ -2038,6 +2039,30 @@
   let keyListenerCallback = null;
   let lastScrollTopPos = 0;
   let touchStartY = 0;
+  // The sentinel is visible on the initial trimmed layout. It is not proof
+  // that the user scrolled, otherwise the observer can fetch old pages in a
+  // loop while the limiter hides each new batch again.
+  let userScrollIntent = false;
+
+  function markUserScrollIntent() {
+    userScrollIntent = true;
+  }
+
+  function consumeUserScrollIntent() {
+    const intent = userScrollIntent;
+    userScrollIntent = false;
+    return intent;
+  }
+
+  let programmaticScrollUntil = 0;
+  function markProgrammaticScroll() {
+    programmaticScrollUntil = Date.now() + 750;
+    userScrollIntent = false;
+  }
+
+  function isProgrammaticScroll() {
+    return Date.now() < programmaticScrollUntil;
+  }
 
   function showScrollLoader() {
     let loader = document.getElementById("turbogpt-scroll-loader");
@@ -2077,6 +2102,7 @@
 
   function unhideOlderBatch(options = {}) {
     if (isAutoLoadingBatch) return false;
+    if (options.fromScroll && !consumeUserScrollIntent()) return false;
     const batchSize = Math.max(1, appSettings.loadBatchSize || 5);
 
     if (getDomHiddenCount() > 0) {
@@ -2098,6 +2124,7 @@
           const newTop = anchor.getBoundingClientRect().top;
           const diff = newTop - anchorTop;
           if (Math.abs(diff) > 1) {
+            markProgrammaticScroll();
             chatContainer.scrollBy({ top: diff, behavior: "instant" });
           }
         }
@@ -2128,6 +2155,7 @@
 
         const chatContainer = getChatScrollContainer();
         if (chatContainer && chatContainer.scrollTop <= 10 && chatContainer.scrollHeight > chatContainer.clientHeight) {
+          markProgrammaticScroll();
           chatContainer.scrollBy({ top: 30, behavior: "instant" });
         }
 
@@ -2204,6 +2232,7 @@
               const currentST = chatContainer ? chatContainer.scrollTop : getEffectiveScrollTop();
               const distanceFromBottom = chatContainer ? (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) : 0;
                 if (entry.isIntersecting && !isAutoLoadingBatch &&
+                  userScrollIntent &&
                   domHidden > 0 &&
                   currentST <= 150 && distanceFromBottom > 100) {
                 unhideOlderBatch({ fromScroll: true });
@@ -2226,7 +2255,10 @@
     // animation frame - wheel events arrive far faster than frames.
     if (!wheelListenerCallback) {
       wheelListenerCallback = (e) => {
-        if (e.deltaY < 0) scheduleGestureCheck();
+        if (e.deltaY < 0) {
+          markUserScrollIntent();
+          scheduleGestureCheck();
+        }
       };
       window.addEventListener("wheel", wheelListenerCallback, { capture: true, passive: true });
     }
@@ -2238,7 +2270,10 @@
       };
       touchMoveCallback = (e) => {
         const currentY = e.touches[0]?.clientY || 0;
-        if (currentY - touchStartY > 35) scheduleGestureCheck();
+        if (currentY - touchStartY > 35) {
+          markUserScrollIntent();
+          scheduleGestureCheck();
+        }
       };
       window.addEventListener("touchstart", touchStartCallback, { capture: true, passive: true });
       window.addEventListener("touchmove", touchMoveCallback, { capture: true, passive: true });
@@ -2247,7 +2282,10 @@
     // 3. Keyboard listener: catches PageUp or Ctrl+ArrowUp at the top
     if (!keyListenerCallback) {
       keyListenerCallback = (e) => {
-        if (e.key === "PageUp" || (e.key === "ArrowUp" && (e.ctrlKey || e.metaKey))) scheduleGestureCheck();
+        if (e.key === "PageUp" || (e.key === "ArrowUp" && (e.ctrlKey || e.metaKey))) {
+          markUserScrollIntent();
+          scheduleGestureCheck();
+        }
       };
       window.addEventListener("keydown", keyListenerCallback, { passive: true });
     }
@@ -2263,9 +2301,11 @@
         const currentST = chatContainer.scrollTop || 0;
         const isUp = currentST < lastScrollTopPos;
         lastScrollTopPos = currentST;
+        if (isProgrammaticScroll()) return;
         if (isUp && currentST <= 150 && !isAutoLoadingBatch) {
           const domHidden = getDomHiddenCount();
           if (domHidden > 0) {
+            markUserScrollIntent();
             unhideOlderBatch({ fromScroll: true });
           }
         }
@@ -2287,6 +2327,8 @@
       const domHidden = getDomHiddenCount();
       if (st <= 150 && domHidden > 0) {
         unhideOlderBatch({ fromScroll: true });
+      } else {
+        consumeUserScrollIntent();
       }
     };
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
@@ -2294,6 +2336,7 @@
   }
 
   function removeAutoScrollLoader() {
+    userScrollIntent = false;
     if (scrollIntersectionObserver) {
       scrollIntersectionObserver.disconnect();
       scrollIntersectionObserver = null;
