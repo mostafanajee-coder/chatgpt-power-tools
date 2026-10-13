@@ -469,6 +469,14 @@
       archiveOnBackfillDone(e.data.payload);
       return;
     }
+    if (e.data && e.data.type === "turbogpt-archive-refresh-done") {
+      archiveOnRefreshDone(e.data.payload);
+      return;
+    }
+    if (e.data && e.data.type === "turbogpt-reply-finished") {
+      archiveOnReplyFinished();
+      return;
+    }
     if (e.data && e.data.type === "turbogpt-resolved-image") {
       const waiter = imageResolveWaiters.get(e.data.requestId);
       if (waiter) {
@@ -2992,6 +3000,12 @@
 
     async function ensureFullChatLoaded() {
       const convId = getConversationId();
+      // Local archive first: instant, and complete once the history fill has
+      // run. The server walk below takes minutes on a long chat (it used to
+      // time out after 30 s, fall back to the screen, and leave a 60-request
+      // walk running in the background on every search).
+      const local = await getArchiveForCurrentChat();
+      if (local) return archiveSearchable(local);
       if (cachedFullConvMessages && cachedFullConvId === convId) {
         return cachedFullConvMessages;
       }
@@ -3049,7 +3063,7 @@
       }
 
       fullMsgs.forEach((msg, idx) => {
-        const textLower = msg.text.toLowerCase();
+        const textLower = msg.lower || msg.text.toLowerCase();
         let matchPos = textLower.indexOf(q);
         if (matchPos !== -1) {
           searchMatches.push({
@@ -3791,7 +3805,12 @@
     const existing = document.getElementById("turbogpt-export-modal");
     if (existing) existing.remove();
 
-    const { title, messages } = extractConversationContent();
+    const extracted = extractConversationContent();
+    const title = extracted.title;
+    // Starts as what is rendered; replaced by the local archive once it is
+    // loaded and holds more (ChatGPT only renders the turns near the
+    // viewport, so the screen is a small slice of a long chat).
+    let messages = extracted.messages;
 
     const modal = markOwned(document.createElement("div"));
     modal.id = "turbogpt-export-modal";
@@ -3809,6 +3828,7 @@
             <button class="turbogpt-link-btn" id="turbogpt-select-all">Select all</button> ·
             <button class="turbogpt-link-btn" id="turbogpt-select-none">None</button>
           </div>
+          <div class="turbogpt-full-export-hint" id="turbogpt-export-source" style="display:none;"></div>
           <div id="turbogpt-export-list" style="display:flex;flex-direction:column;gap:5px;max-height:220px;overflow-y:auto;"></div>
           <div class="turbogpt-full-export-box turbogpt-local-archive-box">
             <div class="turbogpt-full-export-title">💾 Local archive (saved on this device)</div>
@@ -3875,8 +3895,11 @@
 
     // Build selectable message rows safely (no innerHTML for user content)
     const listEl = modal.querySelector("#turbogpt-export-list");
-    const checkboxes = [];
+    let checkboxes = [];
 
+    function renderRows() {
+    listEl.textContent = "";
+    checkboxes = [];
     messages.forEach((m, idx) => {
       const row = document.createElement("label");
       row.className = "turbogpt-select-row";
@@ -3896,8 +3919,11 @@
 
       row.append(cb, role, textSpan);
       listEl.appendChild(row);
+      cb.addEventListener("change", updateExportState);
       checkboxes.push(cb);
     });
+    }
+    renderRows();
 
     function selectedMessages() {
       const picked = messages.filter((_, i) => checkboxes[i]?.checked);
@@ -3910,7 +3936,6 @@
       modal.querySelectorAll(".turbogpt-export-option-btn:not(.turbogpt-local-btn)").forEach((b) => { b.disabled = n === 0; });
     }
 
-    checkboxes.forEach((cb) => cb.addEventListener("change", updateExportState));
     modal.querySelector("#turbogpt-select-all").addEventListener("click", () => {
       checkboxes.forEach(cb => { cb.checked = true; });
       updateExportState();
@@ -3941,7 +3966,7 @@
 
     modal.querySelector("#turbogpt-export-json").addEventListener("click", () => {
       const msgs = selectedMessages();
-      const json = JSON.stringify({ title, exportedAt: new Date().toISOString(), messages: msgs }, null, 2);
+      const json = JSON.stringify({ title, exportedAt: new Date().toISOString(), messages: msgs.map(({ fromArchive, ...m }) => m) }, null, 2);
       downloadBlob(json, `${fileBase()}.json`, "application/json;charset=utf-8");
       modal.remove();
     });
@@ -3993,8 +4018,29 @@
       });
     });
 
-    modal.querySelector("#turbogpt-export-continuation").addEventListener("click", (ev) => {
-      withFullConversation(ev.currentTarget, async (result) => {
+    modal.querySelector("#turbogpt-export-continuation").addEventListener("click", async (ev) => {
+      const button = ev.currentTarget;
+      // The prompt only needs the last N turns, and the local archive always
+      // holds the newest turns: no multi-minute server walk needed.
+      const turnsWanted = Math.max(1, appSettings.continuationTurns || 10);
+      await archiveSyncLatestIfNeeded();
+      const local = await getArchiveForCurrentChat();
+      if (local) {
+        const msgs = archiveExportMessages(local);
+        const users = msgs.filter((m) => m.role === "User").length;
+        if (local.reachedStart || users >= turnsWanted) {
+          const prompt = buildContinuationPrompt(title, msgs, turnsWanted);
+          try {
+            await navigator.clipboard.writeText(prompt);
+            toast("Continuation prompt copied from the local archive — paste it into a new chat.");
+          } catch {
+            downloadBlob(prompt, `${fileBase()}-continuation.md`, "text/markdown;charset=utf-8");
+            toast("Clipboard blocked — continuation prompt downloaded instead.");
+          }
+          return;
+        }
+      }
+      withFullConversation(button, async (result) => {
         const prompt = buildContinuationPrompt(title, result.messages, appSettings.continuationTurns || 10);
         try {
           await navigator.clipboard.writeText(prompt);
@@ -4006,7 +4052,20 @@
       });
     });
 
-    initLocalArchiveExport(modal, title, fileBase);
+    initLocalArchiveExport(modal, title, fileBase, (a) => {
+      const archived = archiveExportMessages(a).map((m) => ({ ...m, fromArchive: true }));
+      if (archived.length <= messages.length) return;
+      const onScreen = messages.length;
+      messages = archived;
+      renderRows();
+      updateExportState();
+      const src = modal.querySelector("#turbogpt-export-source");
+      if (src) {
+        src.textContent = `Listing all ${archived.length} messages from the local archive (${onScreen} rendered on screen).` +
+          (a.reachedStart ? "" : " Older history is still being saved.");
+        src.style.display = "block";
+      }
+    });
 
     modal.querySelector("#turbogpt-export-pdf").addEventListener("click", () => {
       const msgs = selectedMessages();
@@ -4032,6 +4091,8 @@
             pre code { background: none; padding: 0; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
             table { border-collapse: collapse; font-size: 12px; margin: 8px 0; }
             blockquote { border-left: 3px solid #c7d2fe; margin: 8px 0; padding-left: 10px; color: #475569; }
+            .md { font-size: 13px; word-break: break-word; }
+            .md > :first-child { margin-top: 0; }
           </style>
         </head>
         <body>
@@ -4060,7 +4121,9 @@
               if (b.type === "divider") return "<hr>";
               return `<div class="content">${esc(b.text)}</div>`;
             }).join("")
-          : `<div class="content">${esc(m.text)}</div>`;
+          : (m.fromArchive && Archive
+            ? `<div class="md" dir="auto">${Archive.renderMarkdown(m.text)}</div>`
+            : `<div class="content">${esc(m.text)}</div>`);
         html += `<div class="turn"><div class="role">${esc(m.role)}</div>${bodyHtml}</div>`;
       });
       html += `<script>window.onload = () => { window.print(); };<\/script></body></html>`;
@@ -4092,7 +4155,11 @@
     resolveTimer: null,
     domSig: new Map(),
     seenImages: new Set(),
-    attemptedResolve: new Set()
+    attemptedResolve: new Set(),
+    // When the newest page last came from the server, and when a reply last
+    // finished; an export syncs first only if a reply is newer.
+    latestSnapshot: { convId: null, at: 0 },
+    streamEnd: { convId: null, at: 0 }
   };
   let archiveChain = Promise.resolve();
   const imageResolveWaiters = new Map();
@@ -4131,6 +4198,7 @@
     archiveState.convId = convId;
     archiveState.domSig = new Map();
     archiveState.archive = (await Archive.loadConversation(convId)) || Archive.emptyArchive(convId);
+    archiveSearchableCache = null;
     return archiveState.archive;
   }
 
@@ -4148,6 +4216,11 @@
         a.reachedStart = true;
       }
       Archive.updateHistoryCursor(a, payload);
+      // Pages that carry the chat title are newest pages (opening request,
+      // refresh, full export); older history pages are posted without it.
+      if (payload.title !== null && payload.title !== undefined) {
+        archiveState.latestSnapshot = { convId: payload.conversationId, at: Date.now() };
+      }
       archiveState.dirty = true;
       await archiveFlushNow();
       archiveScheduleResolve(payload.conversationId);
@@ -4240,12 +4313,36 @@
         key,
         src,
         messageId,
+        direct: holder?.getAttribute?.("data-message-id") === messageId,
         role,
         width: img.naturalWidth,
         height: img.naturalHeight
       });
     });
     return out;
+  }
+
+  /**
+   * Which page-captured messages may be written to the archive.
+   * - An id read for both a question and its reply in one pass is ambiguous.
+   * - An id the server already confirmed must keep its role.
+   * - An id that is not the element's own data-message-id (a search
+   *   attribute or turn key) is trusted only for a server-confirmed message.
+   */
+  function archiveTrustedUpdates(updates, knownRole) {
+    const batchRole = new Map();
+    for (const u of updates) {
+      const r = batchRole.get(u.message.id);
+      batchRole.set(u.message.id, r && r !== u.message.role ? "conflict" : u.message.role);
+    }
+    return updates.filter((u) => {
+      const id = u.message.id;
+      const known = knownRole.get(id);
+      if (batchRole.get(id) === "conflict") return false;
+      if (known && known !== u.message.role) return false;
+      if (!known && !u.direct) return false;
+      return true;
+    });
   }
 
   /**
@@ -4281,6 +4378,7 @@
       const msg = messageFromElement(el, item.role === "user" ? "User" : "ChatGPT");
       if (!msg.text) continue;
       updates.push({
+        direct: el.getAttribute?.("data-message-id") === id,
         sig,
         pos: {
           prevId: i > 0 ? getMessageIdFromElement(els[i - 1].el) : null,
@@ -4297,12 +4395,25 @@
       await settingsReady;
       if (!archiveEnabled()) return;
       const a = await archiveEnsure(convId);
-      for (const u of updates) {
-        a.messages = Archive.upsertMessage(a.messages, u.message, u.pos);
-        archiveState.domSig.set(u.message.id, u.sig);
-      }
-      if (updates.length) archiveMarkDirty();
+      // Only a message's own data-message-id is known to be the server id.
+      // The current renderer may expose ids only through search attributes
+      // or the turn key, which a question and its reply can share; trusting
+      // those would merge the two, flip a role, or add a duplicate. Such ids
+      // are used only for messages the server already confirmed with the
+      // same role; anything else comes from the latest-page refresh.
+      const knownRole = new Map(a.messages.map((m) => [m.id, m.role]));
+      for (const u of updates) archiveState.domSig.set(u.message.id, u.sig);
+      const trusted = archiveTrustedUpdates(updates, knownRole);
+      for (const u of trusted) a.messages = Archive.upsertMessage(a.messages, u.message, u.pos);
+      if (trusted.length) archiveMarkDirty();
       for (const im of images) {
+        const known = knownRole.get(im.messageId);
+        const role = im.role === "user" ? "User" : "ChatGPT";
+        if ((known && known !== role) || (!known && !im.direct)) {
+          // Retry on a later tick, once the refresh has confirmed the id.
+          archiveState.seenImages.delete(im.key);
+          continue;
+        }
         const ref = { key: im.key, width: im.width, height: im.height };
         if (!(await Archive.hasImage(im.key))) {
           const data = await fetchImageAsDataUrl(im.src);
@@ -4428,7 +4539,103 @@
   }
 
   // Export modal: the local archive section.
-  function initLocalArchiveExport(modal, title, fileBase) {
+  // ---- Archive helpers shared by search, continuation and export ----
+
+  async function getArchiveForCurrentChat() {
+    if (!archiveEnabled()) return null;
+    const convId = getConversationId();
+    if (!convId || isTemporaryChat()) return null;
+    let a = null;
+    await archiveRun(async () => {
+      await settingsReady;
+      if (!archiveEnabled()) return;
+      a = await archiveEnsure(convId);
+    });
+    return a && Array.isArray(a.messages) && a.messages.length ? a : null;
+  }
+
+  function archiveExportMessages(a) {
+    const out = [];
+    for (const m of (a && a.messages) || []) {
+      const text = Archive.cleanChatText(m.text || "").trim();
+      if (text) out.push({ role: m.role === "User" ? "User" : "ChatGPT", text });
+    }
+    return out;
+  }
+
+  // Search runs on every keystroke: the cleaned, lower-cased copy is built
+  // once per archive change, not per query.
+  let archiveSearchableCache = null;
+  function archiveSearchable(a) {
+    if (archiveSearchableCache && archiveSearchableCache.messages === a.messages) return archiveSearchableCache.list;
+    const list = archiveExportMessages(a).map((m) => ({ ...m, lower: m.text.toLowerCase() }));
+    archiveSearchableCache = { messages: a.messages, list };
+    return list;
+  }
+
+  const refreshWaiters = new Map();
+  let refreshSeq = 0;
+  let refreshTimer = null;
+
+  function archiveRequestRefresh(convId, timeoutMs = 10000) {
+    return new Promise((resolve) => {
+      const requestId = `rf-${Date.now()}-${++refreshSeq}`;
+      const timer = setTimeout(() => {
+        refreshWaiters.delete(requestId);
+        resolve({ error: "timeout" });
+      }, timeoutMs);
+      refreshWaiters.set(requestId, (payload) => { clearTimeout(timer); resolve(payload || {}); });
+      try {
+        window.postMessage({ type: "turbogpt-archive-refresh", requestId, conversationId: convId }, "*");
+      } catch {
+        clearTimeout(timer);
+        refreshWaiters.delete(requestId);
+        resolve({ error: "bridge" });
+      }
+    });
+  }
+
+  function archiveOnRefreshDone(payload) {
+    if (!payload || !payload.requestId) return;
+    const waiter = refreshWaiters.get(payload.requestId);
+    if (!waiter) return;
+    refreshWaiters.delete(payload.requestId);
+    // The snapshot was posted before this reply: resolve only once it has
+    // been merged and saved.
+    archiveRun(async () => {}).then(() => waiter(payload));
+  }
+
+  function archiveScheduleRefresh(convId, delayMs, retriesLeft = 3) {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      refreshTimer = null;
+      if (!archiveEnabled() || getConversationId() !== convId) return;
+      const r = await archiveRequestRefresh(convId, 20000);
+      if (r && (r.error === "throttled" || r.error === "busy") && retriesLeft > 0) {
+        archiveScheduleRefresh(convId, 9000, retriesLeft - 1);
+      }
+    }, delayMs);
+  }
+
+  // A reply finished (seen in the page, or the send stream ended): fetch
+  // the newest page so the archive gets the real ids and the model's text.
+  function archiveOnReplyFinished() {
+    const convId = getConversationId();
+    if (!archiveEnabled() || !convId || isTemporaryChat()) return;
+    archiveState.streamEnd = { convId, at: Date.now() };
+    archiveScheduleRefresh(convId, 2500);
+  }
+
+  async function archiveSyncLatestIfNeeded(timeoutMs = 10000) {
+    const convId = getConversationId();
+    if (!archiveEnabled() || !convId || isTemporaryChat()) return;
+    const ended = archiveState.streamEnd.convId === convId ? archiveState.streamEnd.at : 0;
+    const synced = archiveState.latestSnapshot.convId === convId ? archiveState.latestSnapshot.at : 0;
+    if (ended <= synced) return;
+    await archiveRequestRefresh(convId, timeoutMs);
+  }
+
+  function initLocalArchiveExport(modal, title, fileBase, onLoaded = null) {
     const info = modal.querySelector("#turbogpt-local-archive-info");
     const htmlBtn = modal.querySelector("#turbogpt-export-local-html");
     const mdBtn = modal.querySelector("#turbogpt-export-local-md");
@@ -4447,6 +4654,7 @@
 
     // Latest on-screen messages first, so the export includes what you see.
     const loadFresh = async () => {
+      await archiveSyncLatestIfNeeded();
       await archiveCaptureLive({ all: true });
       await archiveRun(archiveFlushNow);
       return Archive.loadConversation(convId);
@@ -4468,6 +4676,9 @@
         return;
       }
       setState(describe(a), true);
+      if (onLoaded) {
+        try { onLoaded(a); } catch {}
+      }
     }).catch(() => setState("Could not read the local archive.", false));
 
     const bestTitle = (a) => (title && title !== "ChatGPT Conversation" ? title : (a.title || title));
@@ -4608,6 +4819,7 @@
       if (appSettings.enabled && appSettings.liveAutoTrim) {
         enforceDomTurnLimit({ live: true });
       }
+      archiveOnReplyFinished();
     }
     wasStreaming = isStreaming;
     // A message is archived once it has finished streaming, never mid-way.

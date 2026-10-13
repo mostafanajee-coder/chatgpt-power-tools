@@ -22,6 +22,12 @@
   // Circuit breaker only - NOT a claim about any real ChatGPT conversation limit.
   const COUNT_MAX_PAGES = 500;
   const COUNT_REQUEST_DELAY_MS = 150;
+  // The turn counter walks a chat's whole history on its own, every time a
+  // chat without a verified count is opened. Since the walk follows the real
+  // history endpoint (v3.13.0) it no longer stops after one page, so it is
+  // paced like the archive's history fill instead of firing pages back to
+  // back - a long chat must never trigger rate limiting on the account.
+  const WALK_PAGE_DELAY_MS = 1500;
   const COUNT_CACHE_MAX_CONVERSATIONS = 200;
 
   // Set to true only for local debugging. Never ships enabled.
@@ -592,7 +598,7 @@
 
         if (!pageInfo || pageInfo.has_previous_page !== true) { reachedEnd = true; break; }
 
-        await sleep(COUNT_REQUEST_DELAY_MS);
+        await sleep(WALK_PAGE_DELAY_MS);
       }
     } catch {
       failureReason = failureReason || "unexpected";
@@ -1095,6 +1101,20 @@
     } catch {}
   }
 
+  function watchReplyStream(response) {
+    if (!response || !response.ok || !response.body) return;
+    let copy;
+    try { copy = response.clone(); } catch { return; }
+    (async () => {
+      const reader = copy.body.getReader();
+      for (;;) {
+        const { done } = await reader.read();
+        if (done) break;
+      }
+      window.postMessage({ type: "turbogpt-reply-finished" }, "*");
+    })().catch(() => {});
+  }
+
   // Read a copy of a response ChatGPT receives unmodified. clone() happens
   // synchronously, before ChatGPT can consume the body; parsing runs in the
   // background and never delays or alters the original.
@@ -1124,6 +1144,53 @@
   // nothing, and the next run resumes from the oldest saved page.
   const BACKFILL_PAGE_DELAY_MS = 1500;
   let backfillInFlightFor = null;
+
+  // Server truth for the newest turns. After a reply finishes, ChatGPT does
+  // not re-fetch the conversation, so the archive would otherwise have to
+  // trust message ids read from the page - and the current renderer does not
+  // reliably expose them. One GET of the same opening request ChatGPT makes
+  // (num_turns=10) returns the latest turns with their real ids and the
+  // model's original markdown. Throttled, and only on the content script's
+  // request.
+  const REFRESH_MIN_INTERVAL_MS = 8000;
+  let refreshInFlight = false;
+  let lastRefreshAt = 0;
+
+  async function refreshLatestPage(conversationId) {
+    const req = lastConversationRequest;
+    if (!req || req.conversationId !== conversationId) return { error: "no-conversation" };
+    if (!messagesEndpointFor(req.url)) return { error: "unsupported-client" };
+    const stillHere = () => lastConversationRequest?.conversationId === conversationId;
+    const attempt = await fetchPageWithRetry(req.url, req.init, stillHere);
+    if (attempt.error) return { error: attempt.error };
+    let data;
+    try {
+      let text = await attempt.res.text();
+      if (text.charCodeAt(0) === 65279) text = text.slice(1);
+      data = JSON.parse(text);
+    } catch {
+      return { error: "parse" };
+    }
+    if (!data || !Array.isArray(data.messages)) return { error: "schema" };
+    postArchiveSnapshot(conversationId, data.title, data.messages,
+      data.page_info?.has_previous_page !== true, data.page_info || null);
+    return { ok: true, messages: data.messages.length };
+  }
+
+  window.addEventListener("message", (e) => {
+    if (e.source !== window) return;
+    if (!e.data || e.data.type !== "turbogpt-archive-refresh") return;
+    const { requestId, conversationId } = e.data;
+    const reply = (result) => window.postMessage({ type: "turbogpt-archive-refresh-done", payload: { requestId, conversationId, ...result } }, "*");
+    if (!conversationId) return reply({ error: "no-conversation" });
+    if (refreshInFlight) return reply({ error: "busy" });
+    if (Date.now() - lastRefreshAt < REFRESH_MIN_INTERVAL_MS) return reply({ error: "throttled" });
+    refreshInFlight = true;
+    lastRefreshAt = Date.now();
+    refreshLatestPage(String(conversationId))
+      .catch(() => ({ error: "unexpected" }))
+      .then((result) => { refreshInFlight = false; reply(result); });
+  });
 
   async function backfillArchive(conversationId, before, maxPages) {
     const req = lastConversationRequest;
@@ -1339,8 +1406,11 @@
 
   function isConversationSendUrl(url, method) {
     if (method !== "POST") return false;
-    if (!/\/backend-api\/conversation(?:\/|\?|$)/i.test(url)) return false;
-    return !/\/(?:gen_title|textdocs|init|voice|share)\b/i.test(url);
+    // The current client sends through /backend-api/f/conversation (seen
+    // live alongside /f/conversation/prepare); the older one used
+    // /backend-api/conversation.
+    if (!/\/backend-api\/(?:f\/)?conversation(?:\/|\?|$)/i.test(url)) return false;
+    return !/\/(?:gen_title|textdocs|init|voice|share|prepare)\b/i.test(url);
   }
 
   function trimConversationMessages(messages, turnLimit) {
@@ -1598,6 +1668,19 @@
       }
     }
 
+    // A send: the reply streams back on this response. A teed copy is read
+    // to its end only to learn when the reply is complete, so the archive
+    // can fetch the finished turn with its real id. ChatGPT's own copy is
+    // untouched. Runs in both booster modes.
+    if (isConversationSendUrl(url, method)) {
+      if (appConfig.enabled) {
+        try { markActiveConversationStale(); } catch {}
+      }
+      const res = await originalFetch.apply(this, args);
+      watchReplyStream(res);
+      return res;
+    }
+
     if (!appConfig.enabled) {
       // Booster off: the response goes to ChatGPT untouched, but the local
       // archive still gets its copy. It is independent of the speed switch.
@@ -1617,10 +1700,6 @@
       return res;
     }
 
-    if (isConversationSendUrl(url, method)) {
-      try { markActiveConversationStale(); } catch {}
-      return originalFetch.apply(this, args);
-    }
 
     if (isConversationUrl(url, method)) {
       // Block ChatGPT's own "load older messages" request from prepending

@@ -351,8 +351,8 @@ check("popup exposes the toggle, stats and delete button, and loads archive.js",
 check("popup backup no longer loads the archive into memory",
   popupJs.includes('filter((k) => !k.startsWith("turbogpt_archive_"))'));
 
-check("mainWorld feeds the archive from every payload path (open, export, booster-off/older pages, count walk, history fill)",
-  (mainSrc.match(/postArchiveSnapshot\(/g) || []).length === 9);
+check("mainWorld feeds the archive from every payload path (open, export, booster-off/older pages, count walk, history fill, latest-page refresh)",
+  (mainSrc.match(/postArchiveSnapshot\(/g) || []).length === 10);
 
 /* ---------------- 10. Real ChatGPT history endpoint (verified live) ---------------- */
 console.log("\n--- PART 10: live-verified history endpoint ---");
@@ -420,7 +420,7 @@ check("content script ingests snapshots and resolved images",
 check("messages are captured only after streaming ends, in idle time",
   contentSrc.includes("if (!isStreaming) scheduleArchiveCapture();") && contentSrc.includes("requestIdleCallback(run"));
 check("archive work waits for stored settings (respects the off switch)",
-  (contentSrc.match(/await settingsReady;\n\s+if \(!archiveEnabled\(\)\) return;/g) || []).length === 2);
+  (contentSrc.match(/await settingsReady;\n\s+if \(!archiveEnabled\(\)\) return;/g) || []).length === 3);
 check("pending archive writes are flushed when the tab is hidden or closed",
   contentSrc.includes("archiveRun(archiveFlushNow);") && contentSrc.includes('window.addEventListener("pagehide"'));
 check("export modal has the two local buttons, independent of message selection",

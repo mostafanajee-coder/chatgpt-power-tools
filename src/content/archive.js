@@ -633,26 +633,120 @@ ${body}
     return indexCache || loadIndex();
   }
 
+  // ---------------------------------------------------------------------
+  // Conversation storage (v2: one key per message)
+  // ---------------------------------------------------------------------
+  //
+  // v1 kept a whole conversation under one key, so every save rewrote all
+  // of it: 3.6 MB for a 756-message chat, ~138 MB written during one history
+  // fill, and every write was broadcast through storage.onChanged (old AND
+  // new value) to every ChatGPT tab's content script. v2 stores a small
+  // record with the message order, plus one key per message, and a save
+  // writes only the messages whose content changed. v1 records still load,
+  // and are converted on their next save.
+
+  const MSG_PREFIX = "turbogpt_archive_m_";
+  const msgKey = (conversationId, id) => `${MSG_PREFIX}${conversationId}_${id}`;
+
+  // What is known to be on disk, per conversation: content signature by
+  // message id, and the order list last written.
+  const persisted = new Map();
+  // Message objects are replaced (never mutated) whenever their content
+  // changes, so a signature can be cached per object.
+  const sigCache = new WeakMap();
+
+  function messageSig(m) {
+    let sig = sigCache.get(m);
+    if (sig) return sig;
+    const imgs = (m.images || []).map((i) => `${i.key}:${i.hash || ""}:${i.pointer ? 1 : 0}`).join(",");
+    sig = `${m.role}|${m.origin}|${m.createTime ?? ""}|${(m.text || "").length}|${hashString(m.text || "")}|${imgs}`;
+    try { sigCache.set(m, sig); } catch {}
+    return sig;
+  }
+
+  const META_FIELDS = ["title", "createdAt", "updatedAt", "lastServerSyncAt", "serverComplete", "reachedStart", "oldestCursor"];
+
+  // updatedAt is set by the save itself, so it never counts as a change.
+  function metaSigOf(archive) {
+    return META_FIELDS.filter((f) => f !== "updatedAt").map((f) => String(archive[f] ?? "")).join("|");
+  }
+
   async function loadConversation(conversationId) {
     if (!conversationId) return null;
     const key = CONV_PREFIX + conversationId;
     const r = await sget(key);
-    const a = r[key];
-    if (!a || typeof a !== "object" || !Array.isArray(a.messages)) return null;
-    return a;
+    const rec = r[key];
+    if (!rec || typeof rec !== "object") return null;
+
+    if (Array.isArray(rec.messages)) {
+      // v1: nothing is known to be on disk per message, so the next save
+      // writes every message once and replaces this record with v2.
+      persisted.set(conversationId, { sigs: new Map(), order: [] });
+      return rec;
+    }
+    if (!Array.isArray(rec.order)) return null;
+
+    const stored = rec.order.length ? await sget(rec.order.map((id) => msgKey(conversationId, id))) : {};
+    const messages = [];
+    const sigs = new Map();
+    for (const id of rec.order) {
+      const raw = stored[msgKey(conversationId, id)];
+      if (!raw || raw.id == null) continue;
+      const { _sig, ...m } = raw;
+      messages.push(m);
+      if (_sig) {
+        sigs.set(String(m.id), _sig);
+        try { sigCache.set(m, _sig); } catch {}
+      }
+    }
+    const archive = { version: 2, conversationId, messages };
+    for (const f of META_FIELDS) if (f in rec) archive[f] = rec[f];
+    persisted.set(conversationId, { sigs, order: rec.order.slice(), metaSig: metaSigOf(archive) });
+    return archive;
   }
 
   async function saveConversation(archive) {
     if (!archive || !archive.conversationId) return false;
+    const conversationId = archive.conversationId;
+    const prev = persisted.get(conversationId) || { sigs: new Map(), order: [] };
+
+    const writes = {};
+    const order = [];
+    const sigs = new Map();
+    const seen = new Set();
+    for (const m of archive.messages || []) {
+      if (!m || m.id == null) continue;
+      const id = String(m.id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      order.push(id);
+      const sig = messageSig(m);
+      sigs.set(id, sig);
+      if (prev.sigs.get(id) !== sig) writes[msgKey(conversationId, id)] = { ...m, _sig: sig };
+    }
+    const removed = prev.order.filter((id) => !seen.has(id)).map((id) => msgKey(conversationId, id));
+    const orderChanged = order.length !== prev.order.length || order.some((id, i) => id !== prev.order[i]);
+    const metaSig = metaSigOf(archive);
+    const metaChanged = prev.metaSig !== metaSig;
+
+    if (!Object.keys(writes).length && !removed.length && !orderChanged && !metaChanged) return true;
+
     archive.updatedAt = Date.now();
+    const record = { version: 2, conversationId, order };
+    for (const f of META_FIELDS) if (archive[f] !== undefined) record[f] = archive[f];
+
     const idx = await loadIndex();
-    idx.conversations[archive.conversationId] = {
+    idx.conversations[conversationId] = {
       title: archive.title || "",
       updatedAt: archive.updatedAt,
-      messageCount: archive.messages.length,
+      messageCount: order.length,
       imageCount: countImages(archive)
     };
-    return sset({ [CONV_PREFIX + archive.conversationId]: archive, [INDEX_KEY]: idx });
+    const ok = await sset({ ...writes, [CONV_PREFIX + conversationId]: record, [INDEX_KEY]: idx });
+    if (!ok) return false;
+    if (removed.length) await sremove(removed);
+    persisted.set(conversationId, { sigs, order, metaSig });
+    return true;
   }
 
   async function hasImage(key) {
@@ -686,6 +780,7 @@ ${body}
     const keys = (await allKeys()).filter((k) => k.startsWith(ARCHIVE_KEY_PREFIX));
     if (keys.length) await sremove(keys);
     indexCache = null;
+    persisted.clear();
     return keys.length;
   }
 
@@ -706,7 +801,7 @@ ${body}
   }
 
   globalThis.TurboGPTArchive = {
-    ARCHIVE_KEY_PREFIX, CONV_PREFIX, IMAGE_PREFIX, INDEX_KEY, MAX_IMAGE_BYTES,
+    ARCHIVE_KEY_PREFIX, CONV_PREFIX, IMAGE_PREFIX, MSG_PREFIX, INDEX_KEY, MAX_IMAGE_BYTES, messageSig,
     imageKeyFromPointer, imageKeyForUrl, hashString, sniffImageMime, isSafeImageDataUrl,
     emptyArchive, normalizeMessage, unionImages, mergeMessages, upsertMessage, attachImage, countImages, updateHistoryCursor,
     escapeHtml, renderInline, renderMarkdown, cleanChatText, buildMarkdownExport, buildHtmlExport,

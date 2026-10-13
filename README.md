@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.14.2-blue.svg?style=flat-square" alt="Version 3.14.2" />
+  <img src="https://img.shields.io/badge/Version-3.15.0-blue.svg?style=flat-square" alt="Version 3.15.0" />
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square" alt="MIT License" />
   <img src="https://img.shields.io/badge/Privacy-100%25%20Local-emerald.svg?style=flat-square" alt="100% Local" />
   <img src="https://img.shields.io/badge/Dependencies-Zero-brightgreen.svg?style=flat-square" alt="Zero dependencies" />
@@ -145,6 +145,18 @@ No dependencies and no build step. Each suite loads the **real** extension sourc
 ---
 
 ## 📜 Changelog
+
+### v3.15.0
+Performance and data-integrity review.
+- ⚡ **Archive saves no longer rewrite the whole conversation.** Each save used to rewrite one key holding every message: 3.6 MB for a 756-message chat, about 138 MB written during a single history fill, and every write was delivered (old and new value) to every open ChatGPT tab through `storage.onChanged`. The archive now keeps a small record with the message order plus one key per message, and a save writes only messages whose content changed: one new reply is a few KB. Existing archives load unchanged and convert on their next save.
+- 🛡️ **No more trusting guessed message ids from the page.** The current renderer may expose ids only through search attributes or the turn key, which a question and its reply can share. Page captures now use only an element's own `data-message-id`, or an id the server already confirmed with the same role, so a question and its answer can never be merged, swapped or duplicated in the archive.
+- 🔄 **Newest turns come from the server, not the page.** When a reply finishes (seen in the page, or the send stream ending), one throttled GET of ChatGPT's own opening request saves the newest turns with their real ids and original markdown. Exports sync first only if a reply finished since the last such snapshot.
+- 🔍 **Full-history search reads the local archive.** It used to start a server walk that takes minutes on a long chat, give up after 30 s, fall back to the screen, and leave the walk running, again on every search. It is now instant.
+- 🔗 **Continuation prompt from the archive** whenever it holds the last N turns, with no server walk.
+- 📋 **Export list shows the whole chat.** ChatGPT only renders turns near the viewport, so the selectable list (Word, PDF, Markdown, TXT, JSON) showed a handful of messages. It now lists every archived message when the archive holds more than the screen, and PDF renders those messages as formatted markdown.
+- 🐢 **The automatic turn-count walk is paced (1.5 s per page).** Since v3.13.0 it walks a chat's full history, which at the old 150 ms pacing risked rate limiting on the account.
+- 📮 **Current send endpoint recognised** (`/backend-api/f/conversation`, excluding `/prepare`).
+- 🧪 New suite `tests/review-v3150.test.mjs` (33 checks).
 
 ### v3.14.2
 Auto-load loop hotfix.
